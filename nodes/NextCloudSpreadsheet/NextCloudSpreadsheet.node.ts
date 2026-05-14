@@ -15,7 +15,10 @@ import {
 	uploadFile,
 	parseWorkbook,
 	serializeWorkbook,
-	writeSheetPreservingFormat,
+	appendRowXml,
+	updateRowXml,
+	deleteRowXml,
+	clearSheetXml,
 	getSheetNames,
 	getWorkbookTables,
 	sheetToRows,
@@ -968,24 +971,12 @@ export class NextCloudSpreadsheet implements INodeType {
 						const rowData: IDataObject = {};
 						for (const col of columns) rowData[col.name] = col.value;
 
-						// Append after the last row, using the configured header row for column mapping
 						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
-						const newRowIdx = sheetRange.e.r + 1;
-						hdrs.forEach((h, ci) => {
-							if (rowData[h] !== undefined) {
-								const val = rowData[h];
-								sheet[xlsx.utils.encode_cell({ r: newRowIdx, c: sheetRange.s.c + ci })] = {
-									v: val, t: typeof val === 'number' ? 'n' : 's',
-								};
-							}
-						});
-						sheetRange.e.r = newRowIdx;
-						sheet['!ref'] = xlsx.utils.encode_range(sheetRange);
-
-						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
+						const outBuffer = await appendRowXml(
+							buffer, sheetName, globalHeaderIdx,
+							sheetRange.s.c, sheetRange.e.c, rowData, workbook,
+						);
 						await uploadFile(this, creds, filePath, outBuffer);
-
 						returnData.push({
 							json: { success: true, operation: 'appendRow', sheetName, rowData, headerRow: globalHeaderRow },
 						});
@@ -996,48 +987,27 @@ export class NextCloudSpreadsheet implements INodeType {
 						const rowData: IDataObject = {};
 						for (const col of columns) rowData[col.name] = col.value;
 
-						// Target row = headerRow + rowNumber (1-based data row)
 						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
-						const targetRowIdx = globalHeaderIdx + rowNumber;
-						if (targetRowIdx > sheetRange.e.r) {
-							throw new NodeOperationError(this.getNode(),
-								`Row ${rowNumber} does not exist (${sheetRange.e.r - globalHeaderIdx} data rows available)`,
-								{ itemIndex: i });
-						}
-						hdrs.forEach((h, ci) => {
-							if (rowData[h] !== undefined) {
-								const val = rowData[h];
-								sheet[xlsx.utils.encode_cell({ r: targetRowIdx, c: sheetRange.s.c + ci })] = {
-									v: val, t: typeof val === 'number' ? 'n' : 's',
-								};
-							}
-						});
-
-						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
+						const outBuffer = await updateRowXml(
+							buffer, sheetName, globalHeaderIdx,
+							sheetRange.s.c, sheetRange.e.c, rowNumber, rowData, workbook,
+						);
 						await uploadFile(this, creds, filePath, outBuffer);
-
 						returnData.push({
 							json: { success: true, operation: 'updateRow', sheetName, rowNumber, rowData, headerRow: globalHeaderRow },
 						});
 					} else if (operation === 'deleteRow') {
 						const rowNumber = this.getNodeParameter('rowNumber', i, 1) as number;
-						deleteRowFromSheet(workbook, sheetName, rowNumber, globalHeaderIdx);
-						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
+						const outBuffer = await deleteRowXml(buffer, sheetName, globalHeaderIdx, rowNumber);
 						await uploadFile(this, creds, filePath, outBuffer);
-
 						returnData.push({
 							json: { success: true, operation: 'deleteRow', sheetName, deletedRow: rowNumber },
 						});
 					} else if (operation === 'clear') {
 						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
 						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
-						// Keep rows up to and including header row, clear everything after
-						const newSheet = xlsx.utils.aoa_to_sheet([hdrs]);
-						workbook.Sheets[sheetName] = newSheet;
-						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
+						const outBuffer = await clearSheetXml(buffer, sheetName, globalHeaderIdx);
 						await uploadFile(this, creds, filePath, outBuffer);
-
 						returnData.push({
 							json: { success: true, operation: 'clear', sheetName, columnsPreserved: hdrs },
 						});
