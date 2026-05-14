@@ -1,0 +1,41 @@
+# Sources TypeScript (seul dist/ est publié)
+credentials/
+nodes/
+index.ts
+
+# Config de build / lint
+tsconfig.json
+.eslintrc.js
+.eslintrc.prepublish.js
+.prettierrc
+gulpfile.js
+
+# Dev
+node_modules/
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+__tests__/
+*.test.ts
+*.spec.ts
+jest.config.*
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI
+.github/
+
+# Guides de développement (non nécessaires dans le package installé)
+DEPLOY.md

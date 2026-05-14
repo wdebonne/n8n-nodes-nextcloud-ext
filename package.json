@@ -1,0 +1,73 @@
+{
+  "name": "n8n-nodes-nextcloud-ext",
+  "version": "1.0.12",
+  "description": "n8n community nodes for Nextcloud — file management (list, upload, download, share) and spreadsheet operations equivalent to the Microsoft 365 Excel node, including named Excel table support",
+  "keywords": [
+    "n8n-community-node-package",
+    "nextcloud",
+    "webdav",
+    "spreadsheet",
+    "excel",
+    "ods",
+    "self-hosted",
+    "automation"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/wdebonne/n8n-nodes-nextcloud-ext#readme",
+  "bugs": {
+    "url": "https://github.com/wdebonne/n8n-nodes-nextcloud-ext/issues"
+  },
+  "author": {
+    "name": "wdebonne",
+    "email": "wdebonne@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wdebonne/n8n-nodes-nextcloud-ext.git"
+  },
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=18.10",
+    "npm": ">=9.0"
+  },
+  "scripts": {
+    "build": "tsc && gulp build:icons",
+    "dev": "tsc --watch",
+    "format": "prettier nodes credentials --write",
+    "lint": "eslint nodes credentials --ext .ts",
+    "lintfix": "eslint nodes credentials --ext .ts --fix",
+    "prepublishOnly": "npm run build && npm run lint"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/NextCloudApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/NextCloud/NextCloud.node.js",
+      "dist/nodes/NextCloudSpreadsheet/NextCloudSpreadsheet.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^18.16.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "eslint-plugin-n8n-nodes-base": "^1.16.2",
+    "gulp": "^4.0.2",
+    "n8n-workflow": "1.x",
+    "prettier": "^2.8.8",
+    "typescript": "^5.1.6"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.6",
+    "jszip": "^3.10.1",
+    "xlsx": "^0.18.5"
+  },
+  "peerDependencies": {
+    "n8n-workflow": ">=1.0.0"
+  }
+}
