@@ -308,6 +308,23 @@ export class NextCloudSpreadsheet implements INodeType {
 			},
 
 			// ==================================================================
+			// Sheet — global Header Row (applies to all sheet operations)
+			// ==================================================================
+			{
+				displayName: 'Header Row',
+				name: 'sheetHeaderRow',
+				type: 'number',
+				default: 1,
+				typeOptions: { minValue: 1 },
+				description: 'Row number containing the column headers (default 1 = first row). Change this if your column names are not on the first row. Reloads all column dropdowns automatically.',
+				displayOptions: {
+					show: {
+						resource: ['sheet'],
+					},
+				},
+			},
+
+			// ==================================================================
 			// Table selector (Table resource only — not for List operation)
 			// ==================================================================
 			{
@@ -377,14 +394,6 @@ export class NextCloudSpreadsheet implements INodeType {
 				},
 				options: [
 					{
-						displayName: 'Header Row',
-						name: 'startRow',
-						type: 'number',
-						default: 1,
-						typeOptions: { minValue: 1 },
-						description: 'Row number containing the column headers (default 1 = first row). Change this if your column names are not on the first row — Column Names or IDs will update automatically.',
-					},
-					{
 						displayName: 'Return Last N Rows',
 						name: 'lastNRows',
 						type: 'number',
@@ -408,10 +417,10 @@ export class NextCloudSpreadsheet implements INodeType {
 				type: 'multiOptions',
 				typeOptions: {
 					loadOptionsMethod: 'getSheetColumnNames',
-					loadOptionsDependsOn: ['filePathFromList', 'filePath', 'sheetFromList', 'sheetName', 'sheetRowOptions'],
+					loadOptionsDependsOn: ['filePathFromList', 'filePath', 'sheetFromList', 'sheetName', 'sheetHeaderRow'],
 				},
 				default: [],
-				description: 'Columns to include in the output. Reloads automatically when Header Row changes. Leave empty to return all columns.',
+				description: 'Columns to include in the output. Reloads when Header Row changes. Leave empty to return all columns.',
 				displayOptions: {
 					show: {
 						resource: ['sheet'],
@@ -507,10 +516,10 @@ export class NextCloudSpreadsheet implements INodeType {
 								type: 'options',
 								typeOptions: {
 									loadOptionsMethod: 'getSheetColumnNames',
-									loadOptionsDependsOn: ['filePathFromList', 'filePath', 'sheetFromList', 'sheetName'],
+									loadOptionsDependsOn: ['filePathFromList', 'filePath', 'sheetFromList', 'sheetName', 'sheetHeaderRow'],
 								},
 								default: '',
-								description: 'Column to write — loaded from the first row of the sheet',
+								description: 'Column to write — reloads when Header Row changes',
 							},
 							{
 								displayName: 'Value',
@@ -659,9 +668,8 @@ export class NextCloudSpreadsheet implements INodeType {
 						? (this.getNodeParameter('sheetName', '') as string)
 						: '';
 
-				// Read header row from Options (default 1 = first row)
-				const rowOpts = this.getNodeParameter('sheetRowOptions', {}) as IDataObject;
-				const headerRow = Math.max(1, (rowOpts.startRow as number) ?? 1);
+				// Read the global Header Row field (visible for all sheet operations)
+				const headerRow = Math.max(1, this.getNodeParameter('sheetHeaderRow', 1) as number);
 
 				try {
 					const creds = await getCredentials(this);
@@ -897,35 +905,38 @@ export class NextCloudSpreadsheet implements INodeType {
 
 					const sheet = workbook.Sheets[sheetName];
 
+					// Global header row — shared by all sheet operations
+					const globalHeaderRow = Math.max(1, this.getNodeParameter('sheetHeaderRow', i, 1) as number);
+					const globalHeaderIdx = Math.min(globalHeaderRow - 1,
+						xlsx.utils.decode_range(sheet['!ref'] ?? 'A1').e.r);
+
+					// Helper: read header cells from the configured row
+					const readHeadersFromRow = (colStart: number, colEnd: number): string[] => {
+						const hdrs: string[] = [];
+						for (let c = colStart; c <= colEnd; c++) {
+							const cell = sheet[xlsx.utils.encode_cell({ r: globalHeaderIdx, c })];
+							hdrs.push(cell ? String(cell.v).trim() : `Column${c - colStart + 1}`);
+						}
+						return hdrs;
+					};
+
 					if (operation === 'getRows') {
 						const returnCols = this.getNodeParameter('returnColumns', i, []) as string[];
 						const sOpts = this.getNodeParameter('sheetRowOptions', i, {}) as IDataObject;
-						// headerRow: row containing column names (1-based). Data starts from headerRow+1.
-						const headerRow = Math.max(1, (sOpts.startRow as number) ?? 1);
 						const sLastN = Math.max(0, (sOpts.lastNRows as number) ?? 0);
 						const sStartCol = Math.max(1, (sOpts.startColumnIndex as number) ?? 1);
 
 						const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-						const headerRowIdx = Math.min(headerRow - 1, range.e.r); // 0-based
-
-						// Read column headers from the specified row
-						const allHeaders: string[] = [];
-						for (let c = range.s.c; c <= range.e.c; c++) {
-							const cell = sheet[xlsx.utils.encode_cell({ r: headerRowIdx, c })];
-							allHeaders.push(cell ? String(cell.v).trim() : `Column${c - range.s.c + 1}`);
-						}
-
-						// Apply column start offset
-						const activeHeaders = allHeaders.slice(sStartCol - 1);
 						const activeColStart = range.s.c + sStartCol - 1;
+						const allHeaders = readHeadersFromRow(range.s.c, range.e.c);
+						const activeHeaders = allHeaders.slice(sStartCol - 1);
 
 						// Read data from headerRow+1 onwards
 						let rows: IDataObject[] = [];
-						for (let r = headerRowIdx + 1; r <= range.e.r; r++) {
+						for (let r = globalHeaderIdx + 1; r <= range.e.r; r++) {
 							const row: IDataObject = {};
 							for (let hi = 0; hi < activeHeaders.length; hi++) {
-								const c = activeColStart + hi;
-								const cell = sheet[xlsx.utils.encode_cell({ r, c })];
+								const cell = sheet[xlsx.utils.encode_cell({ r, c: activeColStart + hi })];
 								row[activeHeaders[hi]] = cell ? cell.v : '';
 							}
 							rows.push(row);
@@ -945,9 +956,10 @@ export class NextCloudSpreadsheet implements INodeType {
 
 						for (const row of rows) returnData.push({ json: row });
 					} else if (operation === 'getColumns') {
-						const headers = getHeaders(sheet);
+						const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
+						const headers = readHeadersFromRow(range.s.c, range.e.c);
 						returnData.push({
-							json: { columns: headers, count: headers.length, sheetName, filePath },
+							json: { columns: headers, count: headers.length, sheetName, filePath, headerRow: globalHeaderRow },
 						});
 					} else if (operation === 'appendRow') {
 						const colValues = this.getNodeParameter('columnValues', i, {}) as IDataObject;
@@ -955,18 +967,26 @@ export class NextCloudSpreadsheet implements INodeType {
 						const rowData: IDataObject = {};
 						for (const col of columns) rowData[col.name] = col.value;
 
-						appendRowToSheet(sheet, rowData);
+						// Append after the last row, using the configured header row for column mapping
+						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
+						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
+						const newRowIdx = sheetRange.e.r + 1;
+						hdrs.forEach((h, ci) => {
+							if (rowData[h] !== undefined) {
+								const val = rowData[h];
+								sheet[xlsx.utils.encode_cell({ r: newRowIdx, c: sheetRange.s.c + ci })] = {
+									v: val, t: typeof val === 'number' ? 'n' : 's',
+								};
+							}
+						});
+						sheetRange.e.r = newRowIdx;
+						sheet['!ref'] = xlsx.utils.encode_range(sheetRange);
+
 						const outBuffer = serializeWorkbook(workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
-							json: {
-								success: true,
-								operation: 'appendRow',
-								sheetName,
-								rowData,
-								totalRows: getDataRowCount(sheet),
-							},
+							json: { success: true, operation: 'appendRow', sheetName, rowData, headerRow: globalHeaderRow },
 						});
 					} else if (operation === 'updateRow') {
 						const rowNumber = this.getNodeParameter('rowNumber', i, 1) as number;
@@ -975,16 +995,33 @@ export class NextCloudSpreadsheet implements INodeType {
 						const rowData: IDataObject = {};
 						for (const col of columns) rowData[col.name] = col.value;
 
-						updateRowInSheet(sheet, rowNumber, rowData);
+						// Target row = headerRow + rowNumber (1-based data row)
+						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
+						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
+						const targetRowIdx = globalHeaderIdx + rowNumber;
+						if (targetRowIdx > sheetRange.e.r) {
+							throw new NodeOperationError(this.getNode(),
+								`Row ${rowNumber} does not exist (${sheetRange.e.r - globalHeaderIdx} data rows available)`,
+								{ itemIndex: i });
+						}
+						hdrs.forEach((h, ci) => {
+							if (rowData[h] !== undefined) {
+								const val = rowData[h];
+								sheet[xlsx.utils.encode_cell({ r: targetRowIdx, c: sheetRange.s.c + ci })] = {
+									v: val, t: typeof val === 'number' ? 'n' : 's',
+								};
+							}
+						});
+
 						const outBuffer = serializeWorkbook(workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
-							json: { success: true, operation: 'updateRow', sheetName, rowNumber, rowData },
+							json: { success: true, operation: 'updateRow', sheetName, rowNumber, rowData, headerRow: globalHeaderRow },
 						});
 					} else if (operation === 'deleteRow') {
 						const rowNumber = this.getNodeParameter('rowNumber', i, 1) as number;
-						deleteRowFromSheet(workbook, sheetName, rowNumber);
+						deleteRowFromSheet(workbook, sheetName, rowNumber, globalHeaderIdx);
 						const outBuffer = serializeWorkbook(workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
@@ -992,13 +1029,16 @@ export class NextCloudSpreadsheet implements INodeType {
 							json: { success: true, operation: 'deleteRow', sheetName, deletedRow: rowNumber },
 						});
 					} else if (operation === 'clear') {
-						const headers = getHeaders(sheet);
-						workbook.Sheets[sheetName] = xlsx.utils.aoa_to_sheet([headers]);
+						const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
+						const hdrs = readHeadersFromRow(sheetRange.s.c, sheetRange.e.c);
+						// Keep rows up to and including header row, clear everything after
+						const newSheet = xlsx.utils.aoa_to_sheet([hdrs]);
+						workbook.Sheets[sheetName] = newSheet;
 						const outBuffer = serializeWorkbook(workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
-							json: { success: true, operation: 'clear', sheetName, columnsPreserved: headers },
+							json: { success: true, operation: 'clear', sheetName, columnsPreserved: hdrs },
 						});
 					}
 				}

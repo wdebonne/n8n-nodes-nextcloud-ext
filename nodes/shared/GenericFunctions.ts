@@ -344,21 +344,37 @@ export function updateRowInSheet(
 	});
 }
 
-// Delete a row by 1-based data index (mutates — rebuilds sheet)
+// Delete a row by 1-based data index, relative to headerRowIdx (0-based)
 export function deleteRowFromSheet(
 	workbook: xlsx.WorkBook,
 	sheetName: string,
 	rowIndex: number,
+	headerRowIdx = 0,
 ): void {
 	const sheet = workbook.Sheets[sheetName];
-	const rows = xlsx.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: '' }) as unknown[][];
-	// rowIndex is 1-based data row (0 = header), so actual array index = rowIndex (header at 0)
-	if (rowIndex < 1 || rowIndex >= rows.length) {
-		throw new Error(`Row ${rowIndex} is out of range`);
+	const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
+	const targetRow = headerRowIdx + rowIndex; // 0-based absolute row
+	const dataRowCount = range.e.r - headerRowIdx;
+
+	if (rowIndex < 1 || rowIndex > dataRowCount) {
+		throw new Error(`Row ${rowIndex} is out of range (${dataRowCount} data rows available)`);
 	}
-	rows.splice(rowIndex, 1);
-	const newSheet = xlsx.utils.aoa_to_sheet(rows as string[][]);
-	workbook.Sheets[sheetName] = newSheet;
+
+	// Shift rows up from targetRow
+	for (let r = targetRow; r < range.e.r; r++) {
+		for (let c = range.s.c; c <= range.e.c; c++) {
+			const src = sheet[xlsx.utils.encode_cell({ r: r + 1, c })];
+			const dst = xlsx.utils.encode_cell({ r, c });
+			if (src) sheet[dst] = { ...src };
+			else delete sheet[dst];
+		}
+	}
+	// Clear last row
+	for (let c = range.s.c; c <= range.e.c; c++) {
+		delete sheet[xlsx.utils.encode_cell({ r: range.e.r, c })];
+	}
+	range.e.r -= 1;
+	sheet['!ref'] = xlsx.utils.encode_range(range);
 }
 
 // ---------------------------------------------------------------------------
