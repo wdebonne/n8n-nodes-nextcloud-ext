@@ -270,16 +270,14 @@ export function serializeWorkbook(workbook: xlsx.WorkBook, ext: string): Buffer 
 }
 
 // ---------------------------------------------------------------------------
-// Surgical write — preserves ALL formatting, styles and table XML/refs.
+// Surgical write — the ONLY correct way to preserve Excel tables/styles.
 //
-// SheetJS regenerates xlsx from scratch → loses tables, styles, drawings.
-// This function:
-//  1. Uses the ORIGINAL ZIP as the base (styles, themes, table XML intact)
-//  2. Replaces ONLY worksheet cell data XMLs with SheetJS output
-//  3. Re-injects <tableParts> so the table→sheet link stays live
-//  4. Updates each table XML ref to match the new sheet extent
-//     (so Excel sees the table grow/shrink correctly on every write)
-//  5. Updates sharedStrings if new string values were added
+// Key insight: replace ONLY <sheetData> inside the original XML.
+// Everything else (tableParts, styles refs, column widths, merge cells,
+// conditional formatting, drawings…) stays untouched in the original.
+// No injection needed — the original already has <tableParts>.
+//
+// Also updates each linked table XML ref to match the new row count.
 // ---------------------------------------------------------------------------
 export async function writeSheetPreservingFormat(
 	originalBuffer: Buffer,
@@ -298,32 +296,40 @@ export async function writeSheetPreservingFormat(
 		JSZip.loadAsync(newWbBuffer),
 	]);
 
-	// Process each modified worksheet
 	for (const path of Object.keys(newZip.files)) {
 		if (!path.match(/^xl\/worksheets\/[^/]+\.xml$/i)) continue;
 
 		const newSheetXml = await newZip.file(path)?.async('text');
 		if (!newSheetXml) continue;
 
-		const origSheetXml = (await origZip.file(path)?.async('text')) ?? '';
+		// Require the original to exist — skip new sheets (shouldn't happen)
+		const origSheetXml = await origZip.file(path)?.async('text');
+		if (!origSheetXml) continue;
 
-		// ── Step A: inject <tableParts> from original ──────────────────────
-		const tpMatch = origSheetXml.match(/<tableParts[\s\S]*?<\/tableParts>/);
-		const merged = tpMatch
-			? newSheetXml.replace(/<\/worksheet>/, tpMatch[0] + '</worksheet>')
-			: newSheetXml;
+		// ── Extract <sheetData> from SheetJS (updated cells) ───────────────
+		const newDataBlock = newSheetXml.match(/<sheetData(?:\s[^>]*)?>[\s\S]*?<\/sheetData>/)?.[0]
+			?? '<sheetData/>';
 
-		origZip.file(path, merged);
+		// ── Replace ONLY <sheetData> in the original XML ───────────────────
+		// All other elements (tableParts, autoFilter, drawings…) remain intact.
+		let updatedXml = origSheetXml.replace(
+			/<sheetData(?:\s[^>]*)?>[\s\S]*?<\/sheetData>/,
+			newDataBlock,
+		);
 
-		// ── Step B: update table XML refs to match new sheet extent ────────
-		if (!tpMatch) continue;
+		// ── Update <dimension> so Excel knows the new used-range extent ─────
+		const newDim = newSheetXml.match(/<dimension[^>]*\/>/)?.[0];
+		if (newDim) {
+			updatedXml = updatedXml.replace(/<dimension[^>]*\/>/, newDim);
+		}
 
-		// Get new row extent from SheetJS <dimension ref="...">
-		const dimMatch = newSheetXml.match(/<dimension[^/]*\bref="([^"]+)"/);
-		if (!dimMatch) continue;
-		const newSheetRange = xlsx.utils.decode_range(dimMatch[1]);
+		origZip.file(path, updatedXml);
 
-		// Find tables referenced by this worksheet via its _rels file
+		// ── Update table XML ref to match new row count ─────────────────────
+		const dimRef = newDim?.match(/ref="([^"]+)"/)?.[1];
+		if (!dimRef) continue;
+		const newSheetRange = xlsx.utils.decode_range(dimRef);
+
 		const wsFileName = path.split('/').pop() ?? '';
 		const relsXml = await origZip.file(`xl/worksheets/_rels/${wsFileName}.rels`)?.async('text');
 		if (!relsXml) continue;
@@ -336,28 +342,25 @@ export async function writeSheetPreservingFormat(
 
 		for (const rel of relList) {
 			if (!(rel['@_Type'] || '').includes('/table')) continue;
-
 			const target = rel['@_Target'] || '';
 			const tableZipPath = 'xl/' + target.replace(/^\.\.\//, '');
 			const tableXml = await origZip.file(tableZipPath)?.async('text');
 			if (!tableXml) continue;
 
-			// Extract the table's current ref to get its column bounds
 			const refMatch = tableXml.match(/<table\b[^>]*\bref="([^"]+)"/i);
 			if (!refMatch) continue;
 
 			const oldRange = xlsx.utils.decode_range(refMatch[1]);
-			// Extend end row to match the new sheet extent, keep columns intact
 			const newTableRef = xlsx.utils.encode_range({
 				s: oldRange.s,
 				e: { r: newSheetRange.e.r, c: oldRange.e.c },
 			});
-
 			origZip.file(tableZipPath, patchTableRef(tableXml, newTableRef));
 		}
 	}
 
-	// Update sharedStrings (new text values added by SheetJS)
+	// Update sharedStrings — SheetJS appends new strings at the end,
+	// so existing indices remain valid.
 	const newSharedStrings = await newZip.file('xl/sharedStrings.xml')?.async('text');
 	if (newSharedStrings) origZip.file('xl/sharedStrings.xml', newSharedStrings);
 
