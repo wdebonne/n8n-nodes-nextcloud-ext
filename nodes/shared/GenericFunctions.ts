@@ -269,6 +269,65 @@ export function serializeWorkbook(workbook: xlsx.WorkBook, ext: string): Buffer 
 	return Buffer.from(out);
 }
 
+// ---------------------------------------------------------------------------
+// Surgical write — preserves ALL original formatting, styles and table XML.
+// SheetJS rewrites worksheets from scratch, losing tables/styles/drawings.
+// This function replaces ONLY the sheet cell data while keeping everything
+// else (table XML, table styles, themes, conditional formatting, etc.)
+// from the original ZIP.
+// ---------------------------------------------------------------------------
+export async function writeSheetPreservingFormat(
+	originalBuffer: Buffer,
+	modifiedWorkbook: xlsx.WorkBook,
+	fileExt: string,
+): Promise<Buffer> {
+	const ext = fileExt.toLowerCase().replace('.', '');
+
+	// Only xlsx/xlsm support surgical ZIP editing — fall back for other formats
+	if (ext !== 'xlsx' && ext !== 'xlsm') {
+		return serializeWorkbook(modifiedWorkbook, fileExt);
+	}
+
+	// Write with SheetJS to get updated cell data
+	const newWbBuffer = serializeWorkbook(modifiedWorkbook, fileExt);
+
+	const [origZip, newZip] = await Promise.all([
+		JSZip.loadAsync(originalBuffer),
+		JSZip.loadAsync(newWbBuffer),
+	]);
+
+	// Replace worksheet XMLs: take SheetJS cell data but keep original
+	// tableParts (table references) and rId namespace declarations
+	for (const path of Object.keys(newZip.files)) {
+		if (!path.match(/^xl\/worksheets\/[^/]+\.xml$/i)) continue;
+
+		const newSheetXml = await newZip.file(path)?.async('text');
+		if (!newSheetXml) continue;
+
+		const origSheetXml = (await origZip.file(path)?.async('text')) ?? '';
+
+		// Inject <tableParts> from original so the table link is preserved
+		const tpMatch = origSheetXml.match(/<tableParts[\s\S]*?<\/tableParts>/);
+		const merged = tpMatch
+			? newSheetXml.replace(/<\/worksheet>/, tpMatch[0] + '</worksheet>')
+			: newSheetXml;
+
+		origZip.file(path, merged);
+	}
+
+	// Update sharedStrings if SheetJS added new strings
+	const newSharedStrings = await newZip.file('xl/sharedStrings.xml')?.async('text');
+	if (newSharedStrings) origZip.file('xl/sharedStrings.xml', newSharedStrings);
+
+	return Buffer.from(
+		await origZip.generateAsync({
+			type: 'nodebuffer',
+			compression: 'DEFLATE',
+			compressionOptions: { level: 6 },
+		}),
+	);
+}
+
 function extToBookType(ext: string): xlsx.BookType {
 	const e = ext.toLowerCase().replace('.', '');
 	const map: Record<string, xlsx.BookType> = {
@@ -979,10 +1038,31 @@ export async function getTablesForFile(
 ): Promise<INodePropertyOptions[]> {
 	const creds = await getCredentials(context);
 	const buffer = await downloadFile(context, creds, filePath);
+
+	// Diagnostic: check whether any xl/tables/*.xml files exist in the ZIP
+	let tableFilesInZip = 0;
+	try {
+		const zip = await JSZip.loadAsync(buffer);
+		tableFilesInZip = Object.keys(zip.files).filter((p) => /xl[/\\]tables[/\\]/i.test(p)).length;
+	} catch { /* not a zip */ }
+
 	const tables = await extractTablesFromZip(buffer);
+
 	if (tables.length === 0) {
-		return [{ name: '(no named tables found — select the range and use Insert → Table in Excel)', value: '' }];
+		if (tableFilesInZip === 0) {
+			// File has NO table XML at all → genuinely no Excel Table
+			return [{
+				name: '⚠ Ce fichier ne contient pas de tableau Excel nommé. Utilisez Insert → Tableau dans Excel, ou passez en mode "By Name" pour saisir le nom manuellement.',
+				value: '',
+			}];
+		}
+		// Table XML files exist but sheet mapping failed
+		return [{
+			name: `⚠ ${tableFilesInZip} tableau(x) trouvé(s) dans le fichier mais impossible de lier aux feuilles. Passez en mode "By Name" et saisissez le nom du tableau.`,
+			value: '',
+		}];
 	}
+
 	return tables.map((t) => {
 		const range = xlsx.utils.decode_range(t.ref);
 		const dataRows = Math.max(0, range.e.r - range.s.r);

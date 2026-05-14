@@ -15,6 +15,7 @@ import {
 	uploadFile,
 	parseWorkbook,
 	serializeWorkbook,
+	writeSheetPreservingFormat,
 	getSheetNames,
 	getWorkbookTables,
 	sheetToRows,
@@ -982,7 +983,7 @@ export class NextCloudSpreadsheet implements INodeType {
 						sheetRange.e.r = newRowIdx;
 						sheet['!ref'] = xlsx.utils.encode_range(sheetRange);
 
-						const outBuffer = serializeWorkbook(workbook, fileExt);
+						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
@@ -1013,7 +1014,7 @@ export class NextCloudSpreadsheet implements INodeType {
 							}
 						});
 
-						const outBuffer = serializeWorkbook(workbook, fileExt);
+						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
@@ -1022,7 +1023,7 @@ export class NextCloudSpreadsheet implements INodeType {
 					} else if (operation === 'deleteRow') {
 						const rowNumber = this.getNodeParameter('rowNumber', i, 1) as number;
 						deleteRowFromSheet(workbook, sheetName, rowNumber, globalHeaderIdx);
-						const outBuffer = serializeWorkbook(workbook, fileExt);
+						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
@@ -1034,7 +1035,7 @@ export class NextCloudSpreadsheet implements INodeType {
 						// Keep rows up to and including header row, clear everything after
 						const newSheet = xlsx.utils.aoa_to_sheet([hdrs]);
 						workbook.Sheets[sheetName] = newSheet;
-						const outBuffer = serializeWorkbook(workbook, fileExt);
+						const outBuffer = await writeSheetPreservingFormat(buffer, workbook, fileExt);
 						await uploadFile(this, creds, filePath, outBuffer);
 
 						returnData.push({
