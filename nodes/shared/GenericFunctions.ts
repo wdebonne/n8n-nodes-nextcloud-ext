@@ -633,83 +633,110 @@ function columnsFromCells(workbook: xlsx.WorkBook, sheetName: string, ref: strin
 		.map((v, i) => v || `Column${i + 1}`);
 }
 
-// Reads all named tables directly from the xlsx ZIP structure
+// Reads all named tables directly from the xlsx ZIP structure.
+// Strategy: find all xl/tables/*.xml files first (most robust),
+// then resolve which sheet owns each table via worksheet _rels files.
 async function extractTablesFromZip(buffer: Buffer): Promise<ZipTable[]> {
-	// Parse once with SheetJS to read cell values for column headers
 	const workbook = parseWorkbook(buffer);
 	const zip = await JSZip.loadAsync(buffer);
 	const tables: ZipTable[] = [];
 
-	// 1. workbook.xml → sheet name → rId mapping
-	const wbXml = await zip.file('xl/workbook.xml')?.async('text');
-	if (!wbXml) return tables;
-	const wb = xmlParser.parse(wbXml);
-	const sheetNodes: unknown[] = (() => {
-		const s = wb?.workbook?.sheets?.sheet;
-		if (!s) return [];
-		return Array.isArray(s) ? s : [s];
-	})();
-	const rIdToSheetName: Record<string, string> = {};
-	for (const s of sheetNodes as Record<string, string>[]) {
-		const rId = s['@_r:id'] || s['@_r:Id'] || '';
-		if (rId) rIdToSheetName[rId] = s['@_name'] || '';
-	}
+	// --- Step 1: Collect all table XML files present in the ZIP ---
+	const tableFilePaths = Object.keys(zip.files).filter(
+		(p) => /^xl[/\\]tables[/\\].+\.xml$/i.test(p),
+	);
+	if (tableFilePaths.length === 0) return tables;
 
-	// 2. workbook.xml.rels → rId → worksheet file (e.g. "worksheets/sheet1.xml")
-	const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('text');
-	if (!wbRelsXml) return tables;
-	const wbRels = xmlParser.parse(wbRelsXml);
-	const wbRelNodes: unknown[] = (() => {
-		const r = wbRels?.Relationships?.Relationship;
-		if (!r) return [];
-		return Array.isArray(r) ? r : [r];
-	})();
-	const rIdToWsFile: Record<string, string> = {};
-	for (const r of wbRelNodes as Record<string, string>[]) {
-		if ((r['@_Type'] || '').includes('/worksheet')) {
-			rIdToWsFile[r['@_Id']] = r['@_Target'];
+	// --- Step 2: Build wsFileName → sheetName map ---
+	// Parse workbook.xml for sheet names and workbook.xml.rels for file targets.
+	// Try both case variants for the rels path.
+	const wsFileToSheetName: Record<string, string> = {};
+	const wbXml = await (zip.file('xl/workbook.xml') ?? zip.file('xl/Workbook.xml'))?.async('text');
+	const wbRelsXml = await (
+		zip.file('xl/_rels/workbook.xml.rels') ?? zip.file('xl/_rels/Workbook.xml.rels')
+	)?.async('text');
+
+	if (wbXml && wbRelsXml) {
+		const wb = xmlParser.parse(wbXml);
+		const sheetNodes = (() => {
+			const s = wb?.workbook?.sheets?.sheet;
+			return s ? (Array.isArray(s) ? s : [s]) : [];
+		})() as Record<string, string>[];
+		const rIdToSheetName: Record<string, string> = {};
+		for (const s of sheetNodes) {
+			const rId = s['@_r:id'] || s['@_r:Id'] || '';
+			if (rId) rIdToSheetName[rId] = s['@_name'] || '';
+		}
+
+		const wbRels = xmlParser.parse(wbRelsXml);
+		const relNodes = (() => {
+			const r = wbRels?.Relationships?.Relationship;
+			return r ? (Array.isArray(r) ? r : [r]) : [];
+		})() as Record<string, string>[];
+		for (const r of relNodes) {
+			if ((r['@_Type'] || '').includes('/worksheet')) {
+				const wsFile = (r['@_Target'] || '').split('/').pop() ?? '';
+				const sName = rIdToSheetName[r['@_Id']] ?? '';
+				if (wsFile && sName) {
+					wsFileToSheetName[wsFile.toLowerCase()] = sName;
+				}
+			}
 		}
 	}
 
-	// 3. For each worksheet, find table relationships → parse table XML
-	for (const [sheetRId, wsTarget] of Object.entries(rIdToWsFile)) {
-		const sheetName = rIdToSheetName[sheetRId];
+	// --- Step 3: Search ALL worksheet _rels files for table references ---
+	// Maps tableZipPath → sheetName
+	const tableZipPathToSheetName: Record<string, string> = {};
+
+	for (const zipPath of Object.keys(zip.files)) {
+		// Match: xl/worksheets/_rels/sheetN.xml.rels (case-insensitive)
+		const m = zipPath.match(/xl[/\\]worksheets[/\\]_rels[/\\](.+\.xml)\.rels$/i);
+		if (!m) continue;
+		const wsFileName = m[1].toLowerCase(); // e.g. "sheet1.xml"
+		const sheetName = wsFileToSheetName[wsFileName];
 		if (!sheetName) continue;
 
-		const wsFileName = wsTarget.split('/').pop() ?? '';
-		const wsRelsXml = await zip.file(`xl/worksheets/_rels/${wsFileName}.rels`)?.async('text');
-		if (!wsRelsXml) continue;
+		const relsXml = await zip.file(zipPath)?.async('text');
+		if (!relsXml) continue;
 
-		const wsRels = xmlParser.parse(wsRelsXml);
-		const wsRelNodes: unknown[] = (() => {
-			const r = wsRels?.Relationships?.Relationship;
-			if (!r) return [];
-			return Array.isArray(r) ? r : [r];
-		})();
+		const rels = xmlParser.parse(relsXml);
+		const relNodes = (() => {
+			const r = rels?.Relationships?.Relationship;
+			return r ? (Array.isArray(r) ? r : [r]) : [];
+		})() as Record<string, string>[];
 
-		for (const r of wsRelNodes as Record<string, string>[]) {
+		for (const r of relNodes) {
 			if (!(r['@_Type'] || '').includes('/table')) continue;
-
-			// Target is like "../tables/table1.xml"
-			const tableZipPath = 'xl/' + (r['@_Target'] || '').replace(/^\.\.\//, '');
-			const tableXml = await zip.file(tableZipPath)?.async('text');
-			if (!tableXml) continue;
-
-			const tbl = xmlParser.parse(tableXml)?.table as Record<string, unknown> | undefined;
-			if (!tbl) continue;
-
-			const name = String(tbl['@_name'] || '');
-			const displayName = String(tbl['@_displayName'] || name);
-			const ref = String(tbl['@_ref'] || '');
-			if (!name || !ref) continue;
-
-			// Read column names from actual header cells — more reliable than XML [@name] attributes
-			// which can be stale or auto-generated ("Column2", "Column3"…) when table was created
-			// without typed headers, or edited outside the table interface.
-			const columns = columnsFromCells(workbook, sheetName, ref);
-
-			tables.push({ name, displayName, ref, sheetName, zipPath: tableZipPath, columns });
+			const target = r['@_Target'] || '';
+			// Target is like "../tables/table1.xml" — resolve relative to xl/worksheets/
+			const resolved = target.startsWith('..')
+				? 'xl/' + target.replace(/^\.\.\//, '')
+				: 'xl/worksheets/' + target;
+			tableZipPathToSheetName[resolved.toLowerCase()] = sheetName;
 		}
+	}
+
+	// --- Step 4: Parse each table XML and build ZipTable objects ---
+	for (const tableZipPath of tableFilePaths) {
+		const sheetName = tableZipPathToSheetName[tableZipPath.toLowerCase()];
+
+		// If we can't determine the sheet from relationships, try to guess from SheetJS
+		const resolvedSheet = sheetName ?? (workbook.SheetNames.length === 1 ? workbook.SheetNames[0] : undefined);
+		if (!resolvedSheet) continue;
+
+		const tableXml = await zip.file(tableZipPath)?.async('text');
+		if (!tableXml) continue;
+
+		const tbl = xmlParser.parse(tableXml)?.table as Record<string, unknown> | undefined;
+		if (!tbl) continue;
+
+		const name = String(tbl['@_name'] || '');
+		const displayName = String(tbl['@_displayName'] || name);
+		const ref = String(tbl['@_ref'] || '');
+		if (!name || !ref) continue;
+
+		const columns = columnsFromCells(workbook, resolvedSheet, ref);
+		tables.push({ name, displayName, ref, sheetName: resolvedSheet, zipPath: tableZipPath, columns });
 	}
 
 	return tables;
