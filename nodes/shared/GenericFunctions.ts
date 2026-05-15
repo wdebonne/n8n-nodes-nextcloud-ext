@@ -977,6 +977,16 @@ export async function getDocFiles(context: ILoadOptionsFunctions): Promise<INode
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// List DOCX/ODT files in a specific folder path (used for annexe file dropdowns)
+export async function getDocFilesFromFolder(context: ILoadOptionsFunctions, folder: string): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const entries = await listDirectory(context, creds, folder || '/', '1');
+	return entries
+		.filter(e => !e.isDirectory && isDocFile(e))
+		.map(e => ({ name: e.name, value: entryToRel(e, creds.user) }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function searchDocFiles(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
 	const creds = await getCredentials(context);
 	const results: INodeListSearchResult['results'] = [];

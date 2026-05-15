@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.38] — 2026-05-15
+
+### Modifié — NextCloud Doc Template : sélecteur de fichier pour les annexes
+
+- **Annexes Folder** : nouveau dropdown arborescent (identique au sélecteur de dossier du template) pour choisir le dossier contenant les fichiers d'annexes — partagé par toutes les entrées de la liste.
+- **Annexe File** : dropdown de fichier dans chaque entrée de la *fixedCollection*, chargé dynamiquement depuis l'*Annexes Folder* sélectionné. Remplace le champ texte libre.
+- **Or: Annexe File Path (Expression)** : champ optionnel conservé dans chaque entrée pour les cas dynamiques (expressions). Prend la priorité sur le dropdown si renseigné.
+
+---
+
 ## [1.0.37] — 2026-05-15
 
 ### Ajouté — NextCloud Doc Template : fusion conditionnelle d'annexes

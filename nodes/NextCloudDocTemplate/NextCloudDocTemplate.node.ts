@@ -16,6 +16,7 @@ import {
 	uploadFile,
 	getFolders,
 	getDocFiles,
+	getDocFilesFromFolder,
 	searchDocFiles,
 	extractCarboneVariables,
 	renderCarboneTemplate,
@@ -272,6 +273,17 @@ export class NextCloudDocTemplate implements INodeType {
 				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['returnBinary'] } },
 			},
 
+			// ── Conditional Annexes — shared folder ──────────────────────────
+			{
+				displayName: 'Annexes Folder',
+				name: 'annexesFolder',
+				type: 'options',
+				typeOptions: { loadOptionsMethod: 'getAnnexesFolders' },
+				displayOptions: { show: { operation: ['fillTemplate'] } },
+				default: '/',
+				description: 'Folder containing the annexe DOCX files (shared by all annexe entries below)',
+			},
+
 			// ── Conditional Annexes ───────────────────────────────────────────
 			{
 				displayName: 'Conditional Annexes',
@@ -281,7 +293,7 @@ export class NextCloudDocTemplate implements INodeType {
 				default: {},
 				typeOptions: { multipleValues: true },
 				displayOptions: { show: { operation: ['fillTemplate'] } },
-				description: 'Append one or more DOCX files after the filled template when a condition is met. Cumulative: all matching annexes are merged in order. Page break is automatically inserted before each annexe.',
+				description: 'Append DOCX files after the filled template when a condition is met. All matching annexes are merged in order with an automatic page break between each.',
 				options: [{
 					displayName: 'Annexe',
 					name: 'annexe',
@@ -292,7 +304,7 @@ export class NextCloudDocTemplate implements INodeType {
 							type: 'string',
 							default: '',
 							placeholder: '={{ $json.trottoir }}',
-							description: 'The value to evaluate. Use an n8n expression referencing your workflow data. Leave the Condition as "Always append" to always add this annexe.',
+							description: 'Value to evaluate. Use an n8n expression. Set Condition to "Always Append" to skip this check.',
 						},
 						{
 							displayName: 'Condition',
@@ -303,7 +315,7 @@ export class NextCloudDocTemplate implements INodeType {
 								{ name: 'Equals', value: 'equals', description: 'Append if the value exactly matches Compare To' },
 								{ name: 'Not Equals', value: 'notEquals', description: 'Append if the value does NOT match Compare To' },
 								{ name: 'Contains', value: 'contains', description: 'Append if the value contains the Compare To string' },
-								{ name: 'Always Append', value: 'always', description: 'Append unconditionally (ignore Value to Check)' },
+								{ name: 'Always Append', value: 'always', description: 'Always append this annexe regardless of the value' },
 							],
 							default: 'isNotEmpty',
 						},
@@ -312,16 +324,27 @@ export class NextCloudDocTemplate implements INodeType {
 							name: 'compareValue',
 							type: 'string',
 							default: '',
-							description: 'Value to compare against (used for Equals, Not Equals, Contains). Supports expressions.',
+							description: 'Value to compare against (Equals, Not Equals, Contains). Supports expressions.',
 							displayOptions: { show: { condition: ['equals', 'notEquals', 'contains'] } },
 						},
 						{
-							displayName: 'Annexe File Path',
+							displayName: 'Annexe File',
+							name: 'annexeFile',
+							type: 'options',
+							typeOptions: {
+								loadOptionsMethod: 'getAnnexeFiles',
+								loadOptionsDependsOn: ['annexesFolder'],
+							},
+							default: '',
+							description: 'DOCX file to append (loaded from the Annexes Folder above)',
+						},
+						{
+							displayName: 'Or: Annexe File Path (Expression)',
 							name: 'annexePath',
 							type: 'string',
 							default: '',
-							placeholder: '/Templates/Annexes/annexe_trottoir.docx',
-							description: 'Full Nextcloud path to the DOCX annexe to append. Supports expressions — e.g. /Templates/Annexes/annexe_{{ $json.type }}.docx',
+							placeholder: '/Templates/Annexes/annexe_{{ $json.type }}.docx',
+							description: 'Optional — overrides the file dropdown above. Use when the path is dynamic (expression). Leave empty to use the dropdown.',
 						},
 					],
 				}],
@@ -341,12 +364,22 @@ export class NextCloudDocTemplate implements INodeType {
 			async getFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return getFolders(this);
 			},
-			// Separate method for the output folder so it can be used independently
 			async getOutputFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return getFolders(this);
+			},
+			async getAnnexesFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return getFolders(this);
 			},
 			async getDocFiles(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return getDocFiles(this);
+			},
+			async getAnnexeFiles(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const folder = (this.getNodeParameter('annexesFolder', '/') as string) || '/';
+				try {
+					const files = await getDocFilesFromFolder(this, folder);
+					if (files.length === 0) return [{ name: '⚠ Aucun fichier DOCX/ODT dans ce dossier', value: '' }];
+					return files;
+				} catch { return []; }
 			},
 			async getDocVariables(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const mode = this.getNodeParameter('filePathMode', 'list') as string;
@@ -446,18 +479,24 @@ export class NextCloudDocTemplate implements INodeType {
 						const buffersToMerge: Buffer[] = [filledBuffer];
 
 						for (const entry of annexeEntries) {
-							const { conditionValue, condition, compareValue, annexePath } = entry;
-							if (!annexePath) continue;
+							const { conditionValue, condition, compareValue, annexeFile, annexePath } = entry as {
+								conditionValue: string; condition: string; compareValue: string;
+								annexeFile: string; annexePath: string;
+							};
+
+							// Path expression overrides dropdown; fallback to dropdown value
+							const resolvedPath = (annexePath || '').trim() || (annexeFile || '').trim();
+							if (!resolvedPath) continue;
 
 							const conditionMet = evaluateAnnexeCondition(conditionValue, condition, compareValue);
 							if (!conditionMet) continue;
 
 							try {
-								const annexeBuffer = await downloadFile(this, creds, annexePath);
+								const annexeBuffer = await downloadFile(this, creds, resolvedPath);
 								buffersToMerge.push(annexeBuffer);
 							} catch (annexeErr) {
 								const msg = annexeErr instanceof Error ? annexeErr.message : String(annexeErr);
-								throw new NodeOperationError(this.getNode(), `Failed to load annexe "${annexePath}": ${msg}`, { itemIndex: i });
+								throw new NodeOperationError(this.getNode(), `Failed to load annexe "${resolvedPath}": ${msg}`, { itemIndex: i });
 							}
 						}
 
