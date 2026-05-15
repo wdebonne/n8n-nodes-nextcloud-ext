@@ -513,16 +513,22 @@ export async function getTableRows(
 	return rows.filter(row => filters.every(f => String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase()));
 }
 
-// Table write: ExcelJS + update table XML ref via JSZip
-async function writeTableOperation(
+// Table write: xlsx-populate for cells + JSZip to patch table XML ref
+// xlsx-populate preserves the original ZIP structure (no file reconstruction)
+async function writeTableWithPopulate(
 	originalBuffer: Buffer,
-	wb: ExcelJS.Workbook,
+	sheetName: string,
 	tableZipPath: string,
 	newRef: string,
+	modifyCells: (sheet: XlsxPopulateSheet) => void,
 ): Promise<Buffer> {
-	const newWbBuffer = await saveWorkbook(wb);
+	// Use xlsx-populate to set cell values (preserves everything else)
+	const xlWb = await XlsxPopulate.fromDataAsync(originalBuffer);
+	const sheet = xlWb.sheet(sheetName);
+	if (sheet) modifyCells(sheet);
+	const newWbBuffer = await xlWb.outputAsync();
 
-	// Use JSZip to update ONLY the table XML ref in the new file
+	// Patch only the table XML ref in the output
 	const newZip = await JSZip.loadAsync(newWbBuffer);
 	const tableXml = await newZip.file(tableZipPath)?.async('text');
 	if (tableXml) {
@@ -539,24 +545,19 @@ export async function appendRowToTable(
 	tableName: string,
 	rowData: IDataObject,
 ): Promise<Buffer> {
-	const wb = await parseWorkbook(buffer);
+	const wb = await parseWorkbook(buffer); // ExcelJS for reading table metadata
 	const tables = await extractTablesFromZip(buffer, wb);
 	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
 	if (!t) throw new Error(`Table "${tableName}" not found`);
 
-	const sheet = wb.getWorksheet(t.sheetName);
-	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
-
 	const er = tableEndRow(t.ref);
 	const newRowNum = er + 1;
-	const newRow = sheet.getRow(newRowNum);
 
-	t.columns.forEach((col, i) => {
-		if (rowData[col] !== undefined) newRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
+	return writeTableWithPopulate(buffer, t.sheetName, t.zipPath, extendTableRef(t.ref, newRowNum), sheet => {
+		t.columns.forEach((col, i) => {
+			if (rowData[col] !== undefined) sheet.cell(newRowNum, i + 1).value(rowData[col]);
+		});
 	});
-	newRow.commit();
-
-	return writeTableOperation(buffer, wb, t.zipPath, extendTableRef(t.ref, newRowNum));
 }
 
 // Update an existing row in a named table (rowIndex = 1-based data row)
@@ -571,20 +572,16 @@ export async function updateRowInTable(
 	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
 	if (!t) throw new Error(`Table "${tableName}" not found`);
 
-	const sheet = wb.getWorksheet(t.sheetName);
-	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
-
 	const sr = tableStartRow(t.ref);
 	const er = tableEndRow(t.ref);
 	const dataRowCount = er - sr;
 	if (rowIndex < 1 || rowIndex > dataRowCount) throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 
-	const targetRow = sheet.getRow(sr + rowIndex);
-	t.columns.forEach((col, i) => {
-		if (rowData[col] !== undefined) targetRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
+	return writeTableWithPopulate(buffer, t.sheetName, t.zipPath, t.ref, sheet => {
+		t.columns.forEach((col, i) => {
+			if (rowData[col] !== undefined) sheet.cell(sr + rowIndex, i + 1).value(rowData[col]);
+		});
 	});
-	targetRow.commit();
-	return writeTableOperation(buffer, wb, t.zipPath, t.ref);
 }
 
 // Delete a row from a named table (rowIndex = 1-based data row)
@@ -598,16 +595,21 @@ export async function deleteRowFromTable(
 	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
 	if (!t) throw new Error(`Table "${tableName}" not found`);
 
-	const sheet = wb.getWorksheet(t.sheetName);
-	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
-
 	const sr = tableStartRow(t.ref);
 	const er = tableEndRow(t.ref);
 	const dataRowCount = er - sr;
 	if (rowIndex < 1 || rowIndex > dataRowCount) throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 
-	sheet.spliceRows(sr + rowIndex, 1);
-	return writeTableOperation(buffer, wb, t.zipPath, extendTableRef(t.ref, er - 1));
+	const maxCol = t.columns.length;
+	// Shift rows up, then clear last row
+	return writeTableWithPopulate(buffer, t.sheetName, t.zipPath, extendTableRef(t.ref, er - 1), sheet => {
+		for (let r = sr + rowIndex; r < er; r++) {
+			for (let c = 1; c <= maxCol; c++) {
+				sheet.cell(r, c).value(sheet.cell(r + 1, c).value());
+			}
+		}
+		for (let c = 1; c <= maxCol; c++) sheet.cell(er, c).value(null);
+	});
 }
 
 // ---------------------------------------------------------------------------
