@@ -35,6 +35,7 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 2. Cliquez **Install a community node**
 3. Entrez `n8n-nodes-nextcloud-ext`
 4. Cliquez **Install**
+5. **Redémarrez n8n** pour activer les nodes
 
 ### Installation manuelle
 
@@ -42,14 +43,12 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 npm install n8n-nodes-nextcloud-ext
 ```
 
-Puis redémarrez n8n.
-
 ---
 
 ## Configuration des credentials
 
 1. Dans n8n → **Credentials** → **New** → cherchez **Nextcloud API**
-2. Renseignez les trois champs :
+2. Renseignez :
 
 | Champ | Description | Exemple |
 |---|---|---|
@@ -98,27 +97,17 @@ Gestion de fichiers, dossiers et partages via l'API WebDAV de Nextcloud.
 
 Lit et écrit dans des fichiers tableur stockés sur Nextcloud. Supporte `.xlsx`, `.xls`, `.ods` et `.csv`.
 
-**Architecture technique :**
-- **Lecture** → ExcelJS (fiable, gère toutes les structures)
-- **Écriture Sheet** → xlsx-populate (modifie uniquement les cellules demandées, préserve tout le reste)
-- **Écriture Table** → ExcelJS + JSZip (modification des cellules + mise à jour du ref XML de la table)
-- **Détection tables** → JSZip + parsing XML direct du fichier xlsx
+> Les écritures utilisent **xlsx-populate** qui modifie uniquement les cellules demandées sans reconstruire le fichier — tableaux Excel nommés, styles, cellules fusionnées et mise en page sont préservés intégralement.
 
 ---
 
 ### Sélection du fichier
 
 ```
-From    ▼  From List           ← mode : liste ou chemin direct
-Folder  ▼  📁 Documents        ← filtre la liste de fichiers
-File    ▼  Arrêtés.xlsx        ← fichiers dans le dossier choisi
+From    ▼  From List           ← liste dynamique ou chemin direct
+Folder  ▼  📁 Documents        ← filtre la liste par dossier (2 niveaux)
+File    ▼  Arrêtés.xlsx        ← fichiers du dossier sélectionné
 ```
-
-| Champ | Description |
-|---|---|
-| **From** | `From List` (menu déroulant) ou `By Path` (expression n8n) |
-| **Folder** | Sélectionne le dossier (racine + 2 niveaux) — recharge automatiquement la liste |
-| **File** | Fichiers tableur disponibles dans le dossier choisi |
 
 ---
 
@@ -126,70 +115,99 @@ File    ▼  Arrêtés.xlsx        ← fichiers dans le dossier choisi
 
 Travaille sur les données d'une feuille de calcul.
 
-**⚙️ Paramètre clé : `Header Row`** — numéro de la ligne contenant les en-têtes de colonnes (défaut : 1). Changez-le si vos colonnes ne sont pas sur la première ligne. Tous les dropdowns de colonnes se rechargent automatiquement.
+**⚙️ Paramètre clé : `Header Row`** — numéro de la ligne contenant les en-têtes (défaut : 1). Tous les dropdowns de colonnes se rechargent automatiquement quand cette valeur change.
 
 | Opération | Description |
 |---|---|
 | **Get Rows** | Retourne toutes les lignes en tant qu'items n8n |
-| **Append Row** | Ajoute une nouvelle ligne à la fin de la feuille |
-| **Update Row** | Modifie une ligne existante par son numéro (1 = première ligne après l'en-tête) |
+| **Append Row** | Ajoute une ligne à la fin (hérite des styles de la ligne précédente) |
+| **Update Row** | Modifie une ligne existante par son numéro |
 | **Delete Row** | Supprime une ligne par son numéro |
 | **Get Columns** | Retourne la liste des en-têtes de colonnes |
 | **Clear** | Supprime toutes les lignes de données en conservant l'en-tête |
 
-#### Options pour Get Rows
+**Options pour Get Rows :**
 
 | Option | Défaut | Description |
 |---|---|---|
-| **Return Last N Rows** | 0 (= toutes) | `1` = dernière ligne seulement, `2` = 2 dernières, etc. |
-| **Start From Column** | 1 | Ignore les colonnes avant la position N |
+| **Return Last N Rows** | 0 (= toutes) | Retourner seulement les N dernières lignes |
+| **Start From Column** | 1 | Ignorer les colonnes avant la position N |
 
-#### Sélection des colonnes (Get Rows)
-
-Le champ **Column Names or IDs** est un sélecteur multiple chargé dynamiquement. Vide = toutes les colonnes.
-
-**Exemple — Append Row avec Header Row = 4**
+**Exemple — fichier avec titre en ligne 1 et en-têtes en ligne 4 :**
 ```
-Header Row : 4              ← ligne avec N°, INTITULÉ, DATE, Service
-Sheet      : Suivi
+Header Row   : 4
+Sheet        : Suivi
 
-Column Values:
-  N°       → {{ $json.numero }}
-  INTITULÉ → {{ $json.objet }}
-  DATE     → {{ $now.format('dd/MM/yyyy') }}
-  Service  → Travaux
+→ Colonnes chargées : N°, INTITULÉ, DATE, Service
+→ Données lues depuis la ligne 5
 ```
 
 ---
 
 ### Resource : Table
 
-Travaille sur une **table Excel nommée** (créée via *Insertion → Tableau* dans Excel, ou `Ctrl+T`).
+Travaille sur une **table Excel nommée** (créée via *Insertion → Tableau* dans Excel, `Ctrl+T`).
 
-Les tables sont détectées directement depuis le XML interne du fichier `.xlsx`. Les opérations d'écriture preservent intégralement la structure de la table (plage, styles, filtres automatiques).
+> La table est détectée directement depuis le XML du fichier `.xlsx`. Les écritures préservent la plage de la table, les styles et les filtres automatiques.
 
 | Opération | Description |
 |---|---|
 | **List** | Liste toutes les tables nommées du classeur |
-| **Get Rows** | Retourne les lignes de la table (avec sélection de colonnes) |
+| **Get Rows** | Retourne les lignes de la table (filtres et options disponibles) |
 | **Append Row** | Ajoute une ligne et **étend automatiquement la plage de la table** |
-| **Update Row** | Modifie une ligne par son numéro |
+| **Update Row** | Modifie une ligne par son numéro dans la table |
 | **Delete Row** | Supprime une ligne et **rétracte la plage de la table** |
 | **Get Columns** | Retourne les en-têtes de colonnes de la table |
 
-**Exemple — Append Row sur une table**
+#### Options pour Get Rows (Table)
+
+| Option / Champ | Description |
+|---|---|
+| **Include Row Number** | Ajoute `__rowNumber` à chaque item (1 = première ligne de données). Utilisez-le dans Update Row ou Delete Row pour cibler la ligne exacte. |
+| **Return Last N Rows** | Retourner seulement les N dernières lignes |
+| **Start From Column** | Ignorer les colonnes avant la position N |
+| **Filters** | Filtrer les lignes par valeur de colonne (plusieurs filtres = AND) |
+
+#### Workflow : trouver et modifier une ligne précise
+
 ```
-File  : Arrêtés.xlsx
-Table : Tableau1  [Suivi · A4:E42 · 38 rows]
+1. Get Rows (Table)
+   ├─ Table   : Suivi
+   ├─ Filters : N° = {{ $json.numero }}   ← valeur à chercher
+   └─ Options : Include Row Number ✓
+
+2. Update Row (Table)
+   ├─ Table      : Suivi
+   ├─ Row Number : {{ $json.__rowNumber }} ← numéro retourné par Get Rows
+   └─ Column Values:
+        Statut → Validé
+        DATE   → {{ $now.format('dd/MM/yyyy') }}
+```
+
+**Résultat de Get Rows avec Include Row Number :**
+```json
+{
+  "__rowNumber": 42,
+  "N°": 8287,
+  "INTITULÉ": "Arrêté de voirie",
+  "DATE": "11/05/2026",
+  "Service": "D. BOURDON"
+}
+```
+
+#### Exemple — Append Row sur une table
+
+```
+Table : Suivi  [Suivi · A4:D752 · 748 rows]
 
 Column Values:
-  N°          → 2025-039
-  INTITULÉ    → Arrêté de voirie
-  DATE        → 15/05/2025
-  Responsable → Martin
-  Service     → Travaux
+  N°       → 8289
+  INTITULÉ → Arrêté de circulation
+  DATE     → 15/05/2025
+  Service  → D. MARTIN
 ```
-→ La table passe automatiquement de `A4:E42` à `A4:E43`.
+
+→ La table passe automatiquement de `A4:D752` à `A4:D753`. Les styles (alignement, couleurs) sont copiés depuis la ligne précédente.
 
 ---
 
@@ -208,8 +226,8 @@ Tous les chemins sont **relatifs à la racine de votre espace Nextcloud** :
 
 ```
 /                              → racine
-/Documents/                    → dossier Documents
 /Documents/rapport.xlsx        → fichier dans Documents
+/Tableaux/Arrêtés/suivi.xlsx  → sous-dossier
 ```
 
 ---
@@ -226,7 +244,7 @@ NODE_OPTIONS=--use-system-ca npm install
 # Compiler TypeScript → dist/
 npm run build
 
-# Mode watch (recompile à chaque sauvegarde)
+# Mode watch
 npm run dev
 ```
 
@@ -245,11 +263,9 @@ npm link n8n-nodes-nextcloud-ext
 ## Roadmap
 
 - [ ] Support OAuth2 Nextcloud (PKCE)
-- [ ] Filtrage de lignes par valeur (column = value)
 - [ ] Node **Nextcloud Talk** (messages, salons)
 - [ ] Node **Nextcloud Contacts** (CardDAV)
 - [ ] Node **Nextcloud Calendar** (CalDAV)
-- [ ] Navigation de dossiers en cascade (3+ niveaux)
 
 ---
 
@@ -259,9 +275,10 @@ npm link n8n-nodes-nextcloud-ext
 
 ---
 
-## Liens utiles
+## Liens
 
-- [Documentation n8n — Community Nodes](https://docs.n8n.io/integrations/community-nodes/)
-- [Documentation WebDAV Nextcloud](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/WebDAV/basic.html)
-- [Guide de déploiement npm](DEPLOY.md)
+- [npmjs.com/package/n8n-nodes-nextcloud-ext](https://www.npmjs.com/package/n8n-nodes-nextcloud-ext)
+- [GitHub](https://github.com/wdebonne/n8n-nodes-nextcloud-ext)
 - [Changelog](CHANGELOG.md)
+- [Guide de déploiement](DEPLOY.md)
+- [Documentation n8n — Community Nodes](https://docs.n8n.io/integrations/community-nodes/)

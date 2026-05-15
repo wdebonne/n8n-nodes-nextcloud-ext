@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.29] — 2025-05-15
+
+### Ajouté
+- **Table → Get Rows — Include Row Number** : nouvelle option dans le bloc Options. Ajoute un champ `__rowNumber` (1-basé) à chaque ligne retournée. Permet de cibler précisément une ligne dans Update Row ou Delete Row via `{{ $json.__rowNumber }}`.
+- **Table → Get Rows — Filters** : nouveau champ `fixedCollection` pour filtrer les lignes par valeur de colonne (ex: N° = 8287). Plusieurs filtres = logique AND. Les colonnes disponibles sont chargées dynamiquement depuis la définition de la table.
+
+---
+
+## [1.0.28] — 2025-05-15
+
+### Ajouté
+- **Copie automatique des styles** lors d'un Append Row (Sheet et Table) : les styles de la ligne précédente (alignement, police, couleurs, bordures, format de nombre) sont copiés vers la nouvelle ligne pour qu'elle corresponde visuellement aux lignes existantes.
+
+---
+
+## [1.0.27] — 2025-05-15
+
+### Corrigé
+- **Fichier xlsx corrompu après Table → Append/Update/Delete Row** : `appendRowToTable`, `updateRowInTable` et `deleteRowFromTable` utilisaient encore `saveWorkbook()` (ExcelJS) en interne. Migré vers la nouvelle fonction `writeTableWithPopulate` qui utilise xlsx-populate pour les cellules et JSZip uniquement pour patcher le ref XML de la table.
+
+---
+
+## [1.0.26] — 2025-05-15
+
 Toutes les modifications notables de ce projet sont documentées dans ce fichier.
 
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/)
