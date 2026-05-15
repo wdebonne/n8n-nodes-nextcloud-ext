@@ -9,8 +9,6 @@ import {
 } from 'n8n-workflow';
 
 import { XMLParser } from 'fast-xml-parser';
-import JSZip from 'jszip';
-import * as xlsx from 'xlsx';
 import ExcelJS from 'exceljs';
 
 // ---------------------------------------------------------------------------
@@ -120,6 +118,8 @@ export interface DavEntry {
 	fileId: string;
 }
 
+const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+
 export async function listDirectory(
 	context: IExecuteFunctions | ILoadOptionsFunctions,
 	creds: NextCloudCredentials,
@@ -140,41 +140,19 @@ export async function listDirectory(
 }
 
 function parsePropfind(xml: string, serverUrl: string, user: string): DavEntry[] {
-	const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: false });
-	const parsed = parser.parse(xml);
-
-	// Navigate the parsed object — the structure varies slightly per parser output
-	const multistatus =
-		parsed['d:multistatus'] ||
-		parsed['D:multistatus'] ||
-		parsed.multistatus ||
-		{};
-
-	const rawResponses =
-		multistatus['d:response'] ||
-		multistatus['D:response'] ||
-		multistatus.response ||
-		[];
-
+	const parsed = (new XMLParser({ ignoreAttributes: false, parseTagValue: false })).parse(xml);
+	const multistatus = parsed['d:multistatus'] || parsed['D:multistatus'] || parsed.multistatus || {};
+	const rawResponses = multistatus['d:response'] || multistatus['D:response'] || multistatus.response || [];
 	const responses = Array.isArray(rawResponses) ? rawResponses : [rawResponses];
 	const baseDavPath = `/remote.php/dav/files/${encodeURIComponent(user)}/`;
 
 	return responses.map((r: IDataObject): DavEntry => {
 		const prop = extractProp(r);
-		const href = String(
-			r['d:href'] || r['D:href'] || r.href || '',
-		);
-
-		const relPath = href.startsWith(baseDavPath)
-			? href.slice(baseDavPath.length)
-			: href;
-
+		const href = String(r['d:href'] || r['D:href'] || r.href || '');
+		const relPath = href.startsWith(baseDavPath) ? href.slice(baseDavPath.length) : href;
 		const resourcetype = (prop['d:resourcetype'] || prop['D:resourcetype'] || prop.resourcetype || {}) as Record<string, unknown>;
-		const isDirectory =
-			typeof resourcetype === 'object' &&
-			('d:collection' in resourcetype ||
-				'D:collection' in resourcetype ||
-				'collection' in resourcetype);
+		const isDirectory = typeof resourcetype === 'object' &&
+			('d:collection' in resourcetype || 'D:collection' in resourcetype || 'collection' in resourcetype);
 
 		return {
 			href,
@@ -189,22 +167,13 @@ function parsePropfind(xml: string, serverUrl: string, user: string): DavEntry[]
 }
 
 function extractProp(response: IDataObject): IDataObject {
-	const propstat =
-		response['d:propstat'] ||
-		response['D:propstat'] ||
-		response.propstat ||
-		{};
+	const propstat = response['d:propstat'] || response['D:propstat'] || response.propstat || {};
 	const first = Array.isArray(propstat) ? propstat[0] : propstat;
-	return (
-		(first['d:prop'] as IDataObject) ||
-		(first['D:prop'] as IDataObject) ||
-		(first.prop as IDataObject) ||
-		{}
-	);
+	return (first['d:prop'] as IDataObject) || (first['D:prop'] as IDataObject) || (first.prop as IDataObject) || {};
 }
 
 // ---------------------------------------------------------------------------
-// Download a file as Buffer
+// Download / Upload
 // ---------------------------------------------------------------------------
 
 export async function downloadFile(
@@ -214,18 +183,11 @@ export async function downloadFile(
 ): Promise<Buffer> {
 	const url = davUrl(creds.serverUrl, creds.user, filePath);
 	const response = await webdavRequest(context, 'GET', url, creds, {}, undefined, 'arraybuffer');
-
 	if (response.statusCode >= 400) {
-		throw new NodeApiError(context.getNode(), {
-			message: `Download failed (${response.statusCode}) for path: ${filePath}`,
-		});
+		throw new NodeApiError(context.getNode(), { message: `Download failed (${response.statusCode}): ${filePath}` });
 	}
 	return Buffer.from(response.body as unknown as ArrayBuffer);
 }
-
-// ---------------------------------------------------------------------------
-// Upload a file (Buffer → WebDAV PUT)
-// ---------------------------------------------------------------------------
 
 export async function uploadFile(
 	context: IExecuteFunctions,
@@ -238,594 +200,90 @@ export async function uploadFile(
 	const options: IHttpRequestOptions = {
 		method: 'PUT',
 		url,
-		headers: {
-			Authorization: authHeader(creds.user, creds.password),
-			'Content-Type': contentType,
-		},
+		headers: { Authorization: authHeader(creds.user, creds.password), 'Content-Type': contentType },
 		body: data,
 		returnFullResponse: true,
 		ignoreHttpStatusErrors: true,
 	};
-
 	const response = await context.helpers.httpRequest(options);
 	const status = response.statusCode as number;
 	if (status >= 400) {
-		throw new NodeApiError(context.getNode(), {
-			message: `Upload failed (${status}) for path: ${filePath}`,
-		});
+		throw new NodeApiError(context.getNode(), { message: `Upload failed (${status}): ${filePath}` });
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Spreadsheet helpers (SheetJS / xlsx)
+// ExcelJS — load / save
 // ---------------------------------------------------------------------------
 
-export function parseWorkbook(buffer: Buffer): xlsx.WorkBook {
-	return xlsx.read(buffer, { type: 'buffer', cellDates: true });
-}
-
-export function serializeWorkbook(workbook: xlsx.WorkBook, ext: string): Buffer {
-	const bookType = extToBookType(ext);
-	const out = xlsx.write(workbook, { type: 'buffer', bookType, cellDates: true });
-	return Buffer.from(out);
-}
-
-// ---------------------------------------------------------------------------
-// Pure-XML sheet editor — NEVER uses SheetJS for writing.
-// SheetJS is used ONLY for reading. All writes go directly into the ZIP XML.
-// This guarantees 100% preservation of tables, styles, merged cells, etc.
-// ---------------------------------------------------------------------------
-
-function xmlEscape(s: string): string {
-	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-// Parse sharedStrings.xml → { list of strings, map string→index }
-function parseSharedStrings(xml: string): { list: string[]; map: Map<string, number> } {
-	const list: string[] = [];
-	const map = new Map<string, number>();
-	for (const m of xml.matchAll(/<si>[\s\S]*?<\/si>/g)) {
-		// Extract text content from <t> elements (handles xml:space="preserve")
-		const texts = [...m[0].matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map(t => t[1]);
-		const val = texts.join(''); // rich text: concat all <t> fragments
-		map.set(val, list.length);
-		list.push(val);
-	}
-	return { list, map };
-}
-
-// Add new strings to sharedStrings.xml, returning updated XML and start index
-function appendSharedStrings(ssXml: string, newStrings: string[]): string {
-	if (newStrings.length === 0) return ssXml;
-	const entries = newStrings.map(s => `<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('');
-	let result = ssXml.replace('</sst>', entries + '</sst>');
-	// Update count attributes
-	const total = (ssXml.match(/<si>/g) ?? []).length + newStrings.length;
-	result = result.replace(/\bcount="\d+"/g, `count="${total}"`);
-	result = result.replace(/\buniqueCount="\d+"/g, `uniqueCount="${total}"`);
-	return result;
-}
-
-// Build a single <c> cell XML element
-function buildCellXml(
-	colLetter: string, rowNum: number,
-	value: unknown,
-	ssMap: Map<string, number>,
-	pendingStrings: string[],
-): string {
-	const ref = `${colLetter}${rowNum}`;
-	if (value === null || value === undefined || value === '') return '';
-	if (typeof value === 'number') {
-		return `<c r="${ref}"><v>${value}</v></c>`;
-	}
-	if (typeof value === 'boolean') {
-		return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`;
-	}
-	const str = String(value);
-	let idx = ssMap.get(str);
-	if (idx === undefined) {
-		idx = ssMap.size + pendingStrings.filter(s => !ssMap.has(s)).length;
-		// Recalculate: existing size + position in pending
-		const pendingIdx = pendingStrings.indexOf(str);
-		if (pendingIdx === -1) {
-			idx = ssMap.size + pendingStrings.length;
-			pendingStrings.push(str);
-			ssMap.set(str, idx);
-		} else {
-			idx = ssMap.size + pendingIdx;
-		}
-	}
-	return `<c r="${ref}" t="s"><v>${idx}</v></c>`;
-}
-
-// Find worksheet zip path for a given sheet name
-async function findWsPath(zip: import('jszip'), sheetName: string): Promise<string | undefined> {
-	// Parse workbook.xml to find rId for this sheet name
-	const wbXml = await zip.file('xl/workbook.xml')?.async('text') ?? '';
-	const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('text') ?? '';
-
-	const sheetRe = new RegExp(`<sheet[^>]+name="${xmlEscape(sheetName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]+r:id="([^"]+)"`, 'i');
-	const sheetMatch = wbXml.match(sheetRe);
-	if (!sheetMatch) return undefined;
-	const rId = sheetMatch[1];
-
-	const relRe = new RegExp(`<Relationship[^>]+Id="${rId}"[^>]+Target="([^"]+)"`, 'i');
-	const relMatch = wbRelsXml.match(relRe);
-	if (!relMatch) return undefined;
-
-	const target = relMatch[1]; // e.g. "worksheets/sheet1.xml"
-	return `xl/${target.replace(/^\.\.\//, '')}`;
-}
-
-// Update all table XML refs linked to a worksheet via _rels
-async function updateLinkedTableRefs(
-	zip: import('jszip'),
-	wsPath: string,
-	newEndRow: number, // 0-based
-): Promise<void> {
-	const wsFileName = wsPath.split('/').pop() ?? '';
-	const relsXml = await zip.file(`xl/worksheets/_rels/${wsFileName}.rels`)?.async('text');
-	if (!relsXml) return;
-
-	const rels = xmlParser.parse(relsXml);
-	const relList = (() => {
-		const r = rels?.Relationships?.Relationship;
-		return r ? (Array.isArray(r) ? r : [r]) : [];
-	})() as Record<string, string>[];
-
-	for (const rel of relList) {
-		if (!(rel['@_Type'] || '').includes('/table')) continue;
-		const tableZipPath = 'xl/' + (rel['@_Target'] || '').replace(/^\.\.\//, '');
-		const tableXml = await zip.file(tableZipPath)?.async('text');
-		if (!tableXml) continue;
-
-		const refMatch = tableXml.match(/<table\b[^>]*\bref="([^"]+)"/i);
-		if (!refMatch) continue;
-
-		const oldRange = xlsx.utils.decode_range(refMatch[1]);
-		const newRef = xlsx.utils.encode_range({ s: oldRange.s, e: { r: newEndRow, c: oldRange.e.c } });
-		zip.file(tableZipPath, patchTableRef(tableXml, newRef));
-	}
-}
-
-// Finalise the ZIP → Buffer
-async function zipToBuffer(zip: import('jszip')): Promise<Buffer> {
-	return Buffer.from(await zip.generateAsync({
-		type: 'nodebuffer',
-		compression: 'DEFLATE',
-		compressionOptions: { level: 6 },
-	}));
-}
-
-// kept for Table operations
-export async function writeSheetPreservingFormat(
-	originalBuffer: Buffer,
-	_modifiedWorkbook: xlsx.WorkBook,
-	_fileExt: string,
-): Promise<Buffer> {
-	return originalBuffer;
-}
-
-// ---------------------------------------------------------------------------
-// ExcelJS-based write operations — preserves ALL Excel structure including
-// named tables, styles, merged cells, conditional formatting and page layout.
-// ExcelJS is the only reliable way to write xlsx without destroying the file.
-// ---------------------------------------------------------------------------
-
-async function loadExcelJS(buffer: Buffer): Promise<ExcelJS.Workbook> {
+export async function parseWorkbook(buffer: Buffer): Promise<ExcelJS.Workbook> {
 	const wb = new ExcelJS.Workbook();
 	await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
 	return wb;
 }
 
-async function saveExcelJS(wb: ExcelJS.Workbook): Promise<Buffer> {
-	const result = await wb.xlsx.writeBuffer();
-	return Buffer.from(result as ArrayBuffer);
+async function saveWorkbook(wb: ExcelJS.Workbook): Promise<Buffer> {
+	return Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
 }
 
-// Append a row using ExcelJS (preserves all formatting)
-export async function appendRowXml(
-	originalBuffer: Buffer,
-	sheetName: string,
-	globalHeaderIdx: number,
-	colStart: number,
-	colEnd: number,
-	rowData: IDataObject,
-	_workbook: xlsx.WorkBook,
-): Promise<Buffer> {
-	const wb = await loadExcelJS(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
-	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+// Resolve cell value (handles formulas, rich text, hyperlinks)
+function cellValue(cell: ExcelJS.Cell): unknown {
+	const v = cell.value;
+	if (v === null || v === undefined) return '';
+	if (v instanceof Date) return v;
+	if (typeof v === 'object') {
+		if ('formula' in v || 'sharedFormula' in v) return (v as ExcelJS.CellFormulaValue).result ?? '';
+		if ('error' in v) return '';
+		if ('richText' in v) return (v as ExcelJS.CellRichTextValue).richText.map(r => r.text).join('');
+		if ('hyperlink' in v) return (v as ExcelJS.CellHyperlinkValue).text ?? '';
+	}
+	return v;
+}
 
-	// Read headers from the configured header row (1-based in ExcelJS)
-	const headerRow = sheet.getRow(globalHeaderIdx + 1);
+// ---------------------------------------------------------------------------
+// Sheet helpers
+// ---------------------------------------------------------------------------
+
+export function getSheetNames(wb: ExcelJS.Workbook): string[] {
+	return wb.worksheets.map(ws => ws.name);
+}
+
+// Read column headers from a specific row (1-based)
+export function getHeaders(sheet: ExcelJS.Worksheet, headerRow: number): string[] {
+	const row = sheet.getRow(headerRow);
 	const headers: string[] = [];
-	for (let c = colStart + 1; c <= colEnd + 1; c++) {
-		const cell = headerRow.getCell(c);
-		headers.push(cell.value ? String(cell.value) : '');
-	}
-
-	// Build values array in column order
-	const values: (string | number | boolean | null)[] = new Array(colStart).fill(null);
-	for (const header of headers) {
-		const val = rowData[header];
-		values.push(val !== undefined ? (val as string | number | boolean) : null);
-	}
-
-	sheet.addRow(values);
-	return saveExcelJS(wb);
-}
-
-// Update a row using ExcelJS
-export async function updateRowXml(
-	originalBuffer: Buffer,
-	sheetName: string,
-	globalHeaderIdx: number,
-	colStart: number,
-	colEnd: number,
-	rowIndex: number,
-	rowData: IDataObject,
-	_workbook: xlsx.WorkBook,
-): Promise<Buffer> {
-	const wb = await loadExcelJS(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
-	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-
-	const headerRow = sheet.getRow(globalHeaderIdx + 1);
-	const targetRowNum = globalHeaderIdx + 1 + rowIndex; // 1-based ExcelJS
-	const targetRow = sheet.getRow(targetRowNum);
-
-	for (let c = colStart + 1; c <= colEnd + 1; c++) {
-		const header = headerRow.getCell(c).value;
-		if (!header) continue;
-		const val = rowData[String(header)];
-		if (val !== undefined) {
-			targetRow.getCell(c).value = val as ExcelJS.CellValue;
-		}
-	}
-	targetRow.commit();
-	return saveExcelJS(wb);
-}
-
-// Delete a row using ExcelJS
-export async function deleteRowXml(
-	originalBuffer: Buffer,
-	sheetName: string,
-	globalHeaderIdx: number,
-	rowIndex: number,
-): Promise<Buffer> {
-	const wb = await loadExcelJS(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
-	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-
-	const targetRowNum = globalHeaderIdx + 1 + rowIndex;
-	sheet.spliceRows(targetRowNum, 1);
-	return saveExcelJS(wb);
-}
-
-// Clear data rows (keep header row) using ExcelJS
-export async function clearSheetXml(
-	originalBuffer: Buffer,
-	sheetName: string,
-	globalHeaderIdx: number,
-): Promise<Buffer> {
-	const wb = await loadExcelJS(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
-	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-
-	const firstDataRow = globalHeaderIdx + 2; // 1-based, row after header
-	const lastRow = sheet.lastRow?.number ?? firstDataRow;
-	if (lastRow >= firstDataRow) {
-		sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
-	}
-	return saveExcelJS(wb);
-}
-
-function extToBookType(ext: string): xlsx.BookType {
-	const e = ext.toLowerCase().replace('.', '');
-	const map: Record<string, xlsx.BookType> = {
-		xlsx: 'xlsx',
-		xlsm: 'xlsm',
-		xls: 'xls',
-		ods: 'ods',
-		csv: 'csv',
-	};
-	return map[e] ?? 'xlsx';
-}
-
-export function getSheetNames(workbook: xlsx.WorkBook): string[] {
-	return workbook.SheetNames;
-}
-
-export function sheetToRows(
-	sheet: xlsx.WorkSheet,
-	rawData = false,
-): IDataObject[] {
-	if (rawData) {
-		const rows = xlsx.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: '' }) as string[][];
-		return rows.map((row, i) => ({ __row: i + 1, ...row }));
-	}
-	return xlsx.utils.sheet_to_json<IDataObject>(sheet, { defval: '' });
-}
-
-export function getHeaders(sheet: xlsx.WorkSheet): string[] {
-	const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-	const headers: string[] = [];
-	for (let col = range.s.c; col <= range.e.c; col++) {
-		const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: col })];
-		headers.push(cell ? String(cell.v) : `Column${col + 1}`);
-	}
+	row.eachCell({ includeEmpty: false }, (cell, colIdx) => {
+		while (headers.length < colIdx - 1) headers.push(`Column${headers.length + 1}`);
+		headers.push(String(cellValue(cell) || `Column${colIdx}`));
+	});
 	return headers;
 }
 
-// Returns the row count (excluding header)
-export function getDataRowCount(sheet: xlsx.WorkSheet): number {
-	const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-	return Math.max(0, range.e.r - range.s.r);
-}
-
-// Append a row to a sheet (mutates)
-export function appendRowToSheet(
-	sheet: xlsx.WorkSheet,
-	rowData: IDataObject,
-): void {
-	const headers = getHeaders(sheet);
-	const rowArray = headers.map((h) => rowData[h] ?? '');
-	xlsx.utils.sheet_add_aoa(sheet, [rowArray], { origin: -1 });
-}
-
-// Update a row by 1-based data index (row 1 = first data row, after header)
-export function updateRowInSheet(
-	sheet: xlsx.WorkSheet,
-	rowIndex: number,
-	rowData: IDataObject,
-): void {
-	const headers = getHeaders(sheet);
-	const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-	const targetRow = range.s.r + rowIndex; // header row + rowIndex
-
-	if (targetRow > range.e.r) {
-		throw new Error(`Row ${rowIndex} does not exist (sheet has ${range.e.r - range.s.r} data rows)`);
-	}
-
-	headers.forEach((h, colIdx) => {
-		if (rowData[h] !== undefined) {
-			const cellAddr = xlsx.utils.encode_cell({ r: targetRow, c: range.s.c + colIdx });
-			sheet[cellAddr] = { v: rowData[h], t: typeof rowData[h] === 'number' ? 'n' : 's' };
-		}
-	});
-}
-
-// Delete a row by 1-based data index, relative to headerRowIdx (0-based)
-export function deleteRowFromSheet(
-	workbook: xlsx.WorkBook,
-	sheetName: string,
-	rowIndex: number,
-	headerRowIdx = 0,
-): void {
-	const sheet = workbook.Sheets[sheetName];
-	const range = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-	const targetRow = headerRowIdx + rowIndex; // 0-based absolute row
-	const dataRowCount = range.e.r - headerRowIdx;
-
-	if (rowIndex < 1 || rowIndex > dataRowCount) {
-		throw new Error(`Row ${rowIndex} is out of range (${dataRowCount} data rows available)`);
-	}
-
-	// Shift rows up from targetRow
-	for (let r = targetRow; r < range.e.r; r++) {
-		for (let c = range.s.c; c <= range.e.c; c++) {
-			const src = sheet[xlsx.utils.encode_cell({ r: r + 1, c })];
-			const dst = xlsx.utils.encode_cell({ r, c });
-			if (src) sheet[dst] = { ...src };
-			else delete sheet[dst];
-		}
-	}
-	// Clear last row
-	for (let c = range.s.c; c <= range.e.c; c++) {
-		delete sheet[xlsx.utils.encode_cell({ r: range.e.r, c })];
-	}
-	range.e.r -= 1;
-	sheet['!ref'] = xlsx.utils.encode_range(range);
-}
-
-// ---------------------------------------------------------------------------
-// Load-options helpers (file browser for n8n dropdowns)
-// ---------------------------------------------------------------------------
-
-function entryToRel(entry: DavEntry, user: string): string {
-	return ('/' + entry.href.replace(
-		`/remote.php/dav/files/${encodeURIComponent(user)}/`, '',
-	)).replace('//', '/');
-}
-
-function isSpreadsheet(entry: DavEntry): boolean {
-	const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
-	return SPREADSHEET_MIME.includes(entry.contentType) || SPREADSHEET_EXT.includes(ext);
-}
-
-// List folders 2 levels deep for the Folder selector
-export async function getFolders(context: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const creds = await getCredentials(context);
-	const result: INodePropertyOptions[] = [{ name: '/ (root)', value: '/' }];
-
-	const rootEntries = await listDirectory(context, creds, '/', '1');
-	const rootDirs = rootEntries.filter((e) => e.isDirectory);
-
-	await Promise.all(
-		rootDirs.map(async (dir) => {
-			const rel = entryToRel(dir, creds.user);
-			result.push({ name: `📁 ${dir.name}`, value: rel });
-			try {
-				const subEntries = await listDirectory(context, creds, rel, '1');
-				for (const sub of subEntries.filter((e) => e.isDirectory)) {
-					result.push({
-						name: `　└ ${sub.name}  (${dir.name})`,
-						value: entryToRel(sub, creds.user),
-					});
-				}
-			} catch { /* skip inaccessible */ }
-		}),
-	);
-
-	return result;
-}
-
-// List spreadsheet files inside the folder chosen by the user
-export async function getSpreadsheetFiles(
-	context: ILoadOptionsFunctions,
-): Promise<INodePropertyOptions[]> {
-	const creds = await getCredentials(context);
-	// Read the folder the user selected — default to root
-	const folderPath = (context.getNodeParameter('folderPath', '/') as string) || '/';
-
-	const entries = await listDirectory(context, creds, folderPath, '1');
-	const files: INodePropertyOptions[] = [];
-
-	for (const e of entries) {
-		if (!e.isDirectory && isSpreadsheet(e)) {
-			files.push({ name: e.name, value: entryToRel(e, creds.user) });
-		}
-	}
-
-	files.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-	return files;
-}
-
-export async function getSheetsForFile(
-	context: ILoadOptionsFunctions,
-	filePath: string,
-): Promise<INodePropertyOptions[]> {
-	const creds = await getCredentials(context);
-	const buffer = await downloadFile(context, creds, filePath);
-	const workbook = parseWorkbook(buffer);
-	return workbook.SheetNames.map((name) => ({ name, value: name }));
-}
-
-// ---------------------------------------------------------------------------
-// Searchable list methods (always shows search box, recursive file discovery)
-// ---------------------------------------------------------------------------
-
-const SPREADSHEET_MIME = [
-	'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-	'application/vnd.ms-excel',
-	'application/vnd.oasis.opendocument.spreadsheet',
-	'text/csv',
-];
-const SPREADSHEET_EXT = ['xlsx', 'xls', 'ods', 'csv', 'xlsm'];
-
-// Search spreadsheet files — root + 1 level of sub-folders (safe, no Depth:infinity)
-export async function searchSpreadsheetFiles(
-	context: ILoadOptionsFunctions,
-	filter?: string,
-): Promise<INodeListSearchResult> {
-	const creds = await getCredentials(context);
-	const results: INodeListSearchResult['results'] = [];
-
-	const collectFiles = (entries: DavEntry[], folderPath: string) => {
-		for (const entry of entries) {
-			if (entry.isDirectory) continue;
-			const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
-			if (!SPREADSHEET_MIME.includes(entry.contentType) && !SPREADSHEET_EXT.includes(ext)) continue;
-			if (filter && !entry.name.toLowerCase().includes(filter.toLowerCase())) continue;
-
-			const rel = ('/' + entry.href.replace(
-				`/remote.php/dav/files/${encodeURIComponent(creds.user)}/`, '',
-			)).replace('//', '/');
-
-			const displayName = folderPath === '/'
-				? entry.name
-				: `${entry.name}  (${folderPath})`;
-
-			results.push({ name: displayName, value: rel });
-		}
-	};
-
-	// Level 0 — root
-	const rootEntries = await listDirectory(context, creds, '/', '1');
-	collectFiles(rootEntries, '/');
-
-	// Level 1 — direct sub-folders of root
-	const subDirs = rootEntries.filter((e) => e.isDirectory);
-	await Promise.all(
-		subDirs.map(async (dir) => {
-			const rel = ('/' + dir.href.replace(
-				`/remote.php/dav/files/${encodeURIComponent(creds.user)}/`, '',
-			)).replace('//', '/');
-			try {
-				const subEntries = await listDirectory(context, creds, rel, '1');
-				collectFiles(subEntries, rel);
-			} catch {
-				// Skip inaccessible sub-folders silently
-			}
-		}),
-	);
-
-	results.sort((a, b) => {
-		const aDepth = String(a.value).split('/').length;
-		const bDepth = String(b.value).split('/').length;
-		return aDepth !== bDepth ? aDepth - bDepth : String(a.name).localeCompare(String(b.name));
-	});
-
-	return { results };
-}
-
-// Search sheet names within the currently selected file
-export async function searchSheetsForFile(
-	context: ILoadOptionsFunctions,
-	filter?: string,
-): Promise<INodeListSearchResult> {
-	const mode = context.getNodeParameter('filePathMode', 'list') as string;
-	const filePath = mode === 'list'
-		? (context.getNodeParameter('filePathFromList', '') as string)
-		: (context.getNodeParameter('filePath', '') as string);
-
-	if (!filePath) return { results: [] };
-
-	const creds = await getCredentials(context);
-	const buffer = await downloadFile(context, creds, filePath);
-	const workbook = parseWorkbook(buffer);
-
-	const results = workbook.SheetNames
-		.filter((name) => !filter || name.toLowerCase().includes(filter.toLowerCase()))
-		.map((name) => ({ name, value: name }));
-
-	return { results };
-}
-
-// Search table names within the currently selected file
-export async function searchTablesForFile(
-	context: ILoadOptionsFunctions,
-	filter?: string,
-): Promise<INodeListSearchResult> {
-	const mode = context.getNodeParameter('filePathMode', 'list') as string;
-	const filePath = mode === 'list'
-		? (context.getNodeParameter('filePathFromList', '') as string)
-		: (context.getNodeParameter('filePath', '') as string);
-
-	if (!filePath) return { results: [] };
-
-	const creds = await getCredentials(context);
-	const buffer = await downloadFile(context, creds, filePath);
-	const tables = await extractTablesFromZip(buffer);
-
-	const results = tables
-		.filter((t) => !filter || t.displayName.toLowerCase().includes(filter.toLowerCase()))
-		.map((t) => {
-			const range = xlsx.utils.decode_range(t.ref);
-			const dataRows = Math.max(0, range.e.r - range.s.r);
-			return {
-				name: `${t.displayName}  [${t.sheetName} · ${t.ref} · ${dataRows} rows]`,
-				value: t.name,
-			};
+// Read all data rows starting from headerRow+1
+export function sheetToRows(
+	sheet: ExcelJS.Worksheet,
+	headerRow: number,
+	colStart = 1,
+): IDataObject[] {
+	const headers = getHeaders(sheet, headerRow);
+	const rows: IDataObject[] = [];
+	sheet.eachRow({ includeEmpty: false }, (row, rowNum) => {
+		if (rowNum <= headerRow) return;
+		const obj: IDataObject = {};
+		headers.forEach((h, i) => {
+			obj[h] = cellValue(row.getCell(colStart + i)) as IDataObject[string];
 		});
+		rows.push(obj);
+	});
+	return rows;
+}
 
-	return { results };
+export function getDataRowCount(sheet: ExcelJS.Worksheet, headerRow: number): number {
+	return Math.max(0, (sheet.lastRow?.number ?? headerRow) - headerRow);
 }
 
 // ---------------------------------------------------------------------------
-// Named Excel Table helpers — JSZip-based (SheetJS community ignores table XML)
+// ExcelJS — table helpers
 // ---------------------------------------------------------------------------
 
 export interface ExcelTableInfo {
@@ -837,432 +295,415 @@ export interface ExcelTableInfo {
 	dataRowCount: number;
 }
 
-// Internal ZIP-level table descriptor
-interface ZipTable {
-	name: string;
-	displayName: string;
-	ref: string;
-	sheetName: string;
-	zipPath: string; // e.g. "xl/tables/table1.xml"
-	columns: string[];
+// ExcelJS table ref format: "A4:D100"
+function tableEndRow(ref: string): number {
+	return parseInt(ref.match(/:?[A-Z]+(\d+)$/i)?.[1] ?? '1', 10);
 }
 
-const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
-
-// Read a single row of header values from a sheet
-function readRowCells(sheet: xlsx.WorkSheet, row: number, colStart: number, colEnd: number): string[] {
-	const headers: string[] = [];
-	for (let c = colStart; c <= colEnd; c++) {
-		const cell = sheet[xlsx.utils.encode_cell({ r: row, c })];
-		headers.push(cell ? String(cell.v).trim() : '');
-	}
-	return headers;
+function tableStartRow(ref: string): number {
+	return parseInt(ref.match(/^[A-Z]+(\d+)/i)?.[1] ?? '1', 10);
 }
 
-// Find the best header row in the table range.
-// Scans up to 5 rows deep: accepts the first row where at least 75% of cells are non-empty.
-// This handles the common pattern where row 1 is a title ("REGISTRE DES ARRÊTÉS")
-// and the real column headers (N°, INTITULÉ…) are a few rows below.
-function columnsFromCells(workbook: xlsx.WorkBook, sheetName: string, ref: string): string[] {
-	const sheet = workbook.Sheets[sheetName];
-	if (!sheet) return [];
-
-	const range = xlsx.utils.decode_range(ref);
-	const totalCols = range.e.c - range.s.c + 1;
-	const maxProbe = Math.min(5, range.e.r - range.s.r);
-
-	for (let offset = 0; offset <= maxProbe; offset++) {
-		const rawHeaders = readRowCells(sheet, range.s.r + offset, range.s.c, range.e.c);
-		const filledCount = rawHeaders.filter((v) => v !== '').length;
-
-		// Accept this row if at most 25% of cells are empty
-		if (filledCount >= Math.ceil(totalCols * 0.75)) {
-			return rawHeaders.map((v, i) => v || `Column${i + 1}`);
-		}
-	}
-
-	// Fallback: first row regardless
-	return readRowCells(sheet, range.s.r, range.s.c, range.e.c)
-		.map((v, i) => v || `Column${i + 1}`);
+function extendTableRef(ref: string, newEndRow: number): string {
+	return ref.replace(/:\w+(\d+)$/, `:${ref.match(/:([A-Z]+)\d+$/i)?.[1] ?? 'A'}${newEndRow}`);
 }
 
-// Find which SheetJS sheet contains cells at a given ref range
-function findSheetForRef(workbook: xlsx.WorkBook, ref: string): string | undefined {
-	try {
-		const range = xlsx.utils.decode_range(ref);
-		// Check if the first cell of the range has a value in any sheet
-		for (const sheetName of workbook.SheetNames) {
-			const sheet = workbook.Sheets[sheetName];
-			if (!sheet) continue;
-			// Check multiple cells in the first row of the ref
-			for (let c = range.s.c; c <= Math.min(range.e.c, range.s.c + 3); c++) {
-				const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c })];
-				if (cell && cell.v !== undefined && cell.v !== '') return sheetName;
-			}
-		}
-	} catch { /* ignore */ }
-	return workbook.SheetNames[0]; // fallback to first sheet
-}
-
-// Reads all named tables directly from the xlsx ZIP.
-// Finds xl/tables/*.xml files first, then resolves sheet ownership two ways:
-// 1. Via worksheet _rels files (standard)
-// 2. Via cell content matching (fallback when relationships are missing/broken)
-async function extractTablesFromZip(buffer: Buffer): Promise<ZipTable[]> {
-	const workbook = parseWorkbook(buffer);
-
-	let zip: import('jszip');
-	try {
-		zip = await JSZip.loadAsync(buffer);
-	} catch {
-		return []; // not a valid ZIP / not an xlsx file
-	}
-
-	const tables: ZipTable[] = [];
-
-	// --- Step 1: Find ALL table XML files in the ZIP ---
-	const tableFilePaths = Object.keys(zip.files).filter(
-		(p) => /^xl[/\\]tables[/\\].+\.xml$/i.test(p),
-	);
-	if (tableFilePaths.length === 0) return tables;
-
-	// --- Step 2: Try to build tableZipPath → sheetName via _rels (best effort) ---
-	const tablePathToSheet: Record<string, string> = {};
-
-	// 2a. workbook.xml → rId → sheetName
-	const rIdToSheetName: Record<string, string> = {};
-	const wbXml = await zip.file('xl/workbook.xml')?.async('text')
-		?? await zip.file('xl/Workbook.xml')?.async('text');
-	if (wbXml) {
-		const wb = xmlParser.parse(wbXml);
-		const nodes = (() => { const s = wb?.workbook?.sheets?.sheet; return s ? (Array.isArray(s) ? s : [s]) : []; })() as Record<string, string>[];
-		for (const s of nodes) {
-			const rId = s['@_r:id'] || s['@_r:Id'] || '';
-			if (rId) rIdToSheetName[rId] = s['@_name'] || '';
-		}
-	}
-
-	// 2b. workbook.xml.rels → rId → worksheet filename
-	const wsFileToSheetName: Record<string, string> = {};
-	const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('text')
-		?? await zip.file('xl/_rels/Workbook.xml.rels')?.async('text');
-	if (wbRelsXml) {
-		const rels = xmlParser.parse(wbRelsXml);
-		const nodes = (() => { const r = rels?.Relationships?.Relationship; return r ? (Array.isArray(r) ? r : [r]) : []; })() as Record<string, string>[];
-		for (const r of nodes) {
-			if ((r['@_Type'] || '').includes('/worksheet')) {
-				const file = (r['@_Target'] || '').split('/').pop()?.toLowerCase() ?? '';
-				const name = rIdToSheetName[r['@_Id']] ?? '';
-				if (file && name) wsFileToSheetName[file] = name;
-			}
-		}
-	}
-
-	// 2c. Scan every worksheet _rels file for table references
-	for (const zipPath of Object.keys(zip.files)) {
-		const m = zipPath.match(/xl[/\\]worksheets[/\\]_rels[/\\](.+\.xml)\.rels$/i);
-		if (!m) continue;
-		const wsFile = m[1].toLowerCase();
-		const sheetName = wsFileToSheetName[wsFile];
-		if (!sheetName) continue;
-		const relsXml = await zip.file(zipPath)?.async('text');
-		if (!relsXml) continue;
-		const rels = xmlParser.parse(relsXml);
-		const nodes = (() => { const r = rels?.Relationships?.Relationship; return r ? (Array.isArray(r) ? r : [r]) : []; })() as Record<string, string>[];
-		for (const r of nodes) {
-			if (!(r['@_Type'] || '').includes('/table')) continue;
-			const target = r['@_Target'] || '';
-			const resolved = ('xl/' + target.replace(/^\.\.\//, '')).toLowerCase();
-			tablePathToSheet[resolved] = sheetName;
-		}
-	}
-
-	// --- Step 3: Parse each table XML ---
-	for (const tableZipPath of tableFilePaths) {
-		const tableXml = await zip.file(tableZipPath)?.async('text');
-		if (!tableXml) continue;
-
-		const tbl = xmlParser.parse(tableXml)?.table as Record<string, unknown> | undefined;
-		if (!tbl) continue;
-
-		const name = String(tbl['@_name'] || '');
-		const displayName = String(tbl['@_displayName'] || name);
-		const ref = String(tbl['@_ref'] || '');
-		if (!name || !ref) continue;
-
-		// Resolve sheet: via _rels first, then by cell-content matching
-		const sheetName =
-			tablePathToSheet[tableZipPath.toLowerCase()] ??
-			findSheetForRef(workbook, ref);
-
-		if (!sheetName) continue;
-
-		const columns = columnsFromCells(workbook, sheetName, ref);
-		tables.push({ name, displayName, ref, sheetName, zipPath: tableZipPath, columns });
-	}
-
-	return tables;
-}
-
-function zipTableToInfo(t: ZipTable): ExcelTableInfo {
-	const range = xlsx.utils.decode_range(t.ref);
-	return {
-		name: t.name,
-		displayName: t.displayName,
-		ref: t.ref,
-		sheetName: t.sheetName,
-		columns: t.columns,
-		dataRowCount: Math.max(0, range.e.r - range.s.r),
-	};
-}
-
-function findZipTable(tables: ZipTable[], tableName: string): ZipTable {
-	const t = tables.find((x) => x.name === tableName || x.displayName === tableName);
-	if (!t) throw new Error(`Table "${tableName}" not found. Use "List" to see available tables.`);
-	return t;
-}
-
-// Public: list all tables in a workbook buffer
+// Get all named tables from all sheets
 export async function getWorkbookTables(buffer: Buffer): Promise<ExcelTableInfo[]> {
-	const tables = await extractTablesFromZip(buffer);
-	return tables.map(zipTableToInfo);
+	const wb = await parseWorkbook(buffer);
+	const result: ExcelTableInfo[] = [];
+
+	for (const sheet of wb.worksheets) {
+		const tables = (sheet as unknown as { tables: Record<string, { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> }> }).tables ?? {};
+		for (const [, table] of Object.entries(tables)) {
+			const sr = tableStartRow(table.ref);
+			const er = tableEndRow(table.ref);
+			const dataRowCount = Math.max(0, er - sr);
+			const headers = getHeaders(sheet, sr);
+			result.push({
+				name: table.name,
+				displayName: table.displayName ?? table.name,
+				ref: table.ref,
+				sheetName: sheet.name,
+				columns: table.columns?.length ? table.columns.map(c => c.name) : headers,
+				dataRowCount,
+			});
+		}
+	}
+	return result;
 }
 
-// Return column headers of a named table
+// Find a table by name across all sheets
+async function findTableInWorkbook(
+	wb: ExcelJS.Workbook,
+	tableName: string,
+): Promise<{ sheet: ExcelJS.Worksheet; table: { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> } }> {
+	for (const sheet of wb.worksheets) {
+		const tables = (sheet as unknown as { tables: Record<string, { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> }> }).tables ?? {};
+		for (const [, table] of Object.entries(tables)) {
+			if (table.name === tableName || table.displayName === tableName) {
+				return { sheet, table };
+			}
+		}
+	}
+	throw new Error(`Table "${tableName}" not found. Use "List" to see available tables.`);
+}
+
+// Return column names of a named table
 export async function getTableColumns(buffer: Buffer, tableName: string): Promise<string[]> {
-	const tables = await extractTablesFromZip(buffer);
-	return findZipTable(tables, tableName).columns;
+	const wb = await parseWorkbook(buffer);
+	const { sheet, table } = await findTableInWorkbook(wb, tableName);
+	if (table.columns?.length) return table.columns.map(c => c.name);
+	return getHeaders(sheet, tableStartRow(table.ref));
 }
 
-// Return all data rows of a named table (with optional filters)
+// Return data rows from a named table (optionally filtered by column values)
 export async function getTableRows(
 	buffer: Buffer,
 	tableName: string,
 	filters: Array<{ column: string; value: string }> = [],
 ): Promise<IDataObject[]> {
-	const tables = await extractTablesFromZip(buffer);
-	const zt = findZipTable(tables, tableName);
-	const workbook = parseWorkbook(buffer);
-	const sheet = workbook.Sheets[zt.sheetName];
-	if (!sheet) throw new Error(`Sheet "${zt.sheetName}" not found in workbook`);
+	const wb = await parseWorkbook(buffer);
+	const { sheet, table } = await findTableInWorkbook(wb, tableName);
+	const sr = tableStartRow(table.ref); // header row
+	const er = tableEndRow(table.ref);
+	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
 
-	const range = xlsx.utils.decode_range(zt.ref);
 	const rows: IDataObject[] = [];
-
-	for (let r = range.s.r + 1; r <= range.e.r; r++) {
-		const row: IDataObject = {};
-		for (let c = range.s.c; c <= range.e.c; c++) {
-			const cell = sheet[xlsx.utils.encode_cell({ r, c })];
-			row[zt.columns[c - range.s.c]] = cell ? cell.v : '';
-		}
-		rows.push(row);
+	for (let r = sr + 1; r <= er; r++) {
+		const row = sheet.getRow(r);
+		const obj: IDataObject = {};
+		columns.forEach((col, i) => {
+			obj[col] = cellValue(row.getCell(i + 1)) as IDataObject[string];
+		});
+		rows.push(obj);
 	}
 
 	if (filters.length === 0) return rows;
-	return rows.filter((row) =>
-		filters.every((f) => String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase()),
+	return rows.filter(row =>
+		filters.every(f => String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase()),
 	);
 }
 
-// ---------------------------------------------------------------------------
-// Write helpers — rebuild xlsx preserving table XML from original ZIP
-// ---------------------------------------------------------------------------
-
-// Patches the ref attribute in a table XML string
-function patchTableRef(tableXml: string, newRef: string): string {
-	return tableXml
-		.replace(/(<table\b[^>]*\s)ref="[^"]*"/i, `$1ref="${newRef}"`)
-		.replace(/(<autoFilter\b[^>]*\s)ref="[^"]*"/i, `$1ref="${newRef}"`);
-}
-
-// Writes a modified workbook while preserving all table XML from the original ZIP
-async function buildXlsxWithTables(
-	originalBuffer: Buffer,
-	modifiedWorkbook: xlsx.WorkBook,
-	ext: string,
-	tableRefUpdates: Record<string, string> = {}, // zipPath → new ref
-): Promise<Buffer> {
-	// SheetJS serialises cells, but strips table XML — fix that with JSZip
-	const newWbBuffer = serializeWorkbook(modifiedWorkbook, ext);
-
-	const [origZip, newZip] = await Promise.all([
-		JSZip.loadAsync(originalBuffer),
-		JSZip.loadAsync(newWbBuffer),
-	]);
-
-	// Copy table XML files (with optional ref patch)
-	for (const [path, file] of Object.entries(origZip.files)) {
-		if (!path.startsWith('xl/tables/')) continue;
-		let content = await file.async('text');
-		if (tableRefUpdates[path]) content = patchTableRef(content, tableRefUpdates[path]);
-		newZip.file(path, content);
-	}
-
-	// Restore worksheet relationship files (which link sheets → tables)
-	for (const [path, file] of Object.entries(origZip.files)) {
-		if (path.startsWith('xl/worksheets/_rels/')) {
-			newZip.file(path, await file.async('text'));
-		}
-	}
-
-	// Merge Content_Types.xml: add table Override entries that SheetJS omitted
-	const origCtXml = (await origZip.file('[Content_Types].xml')?.async('text')) ?? '';
-	const newCtXml = (await newZip.file('[Content_Types].xml')?.async('text')) ?? '';
-	const tableOverrides = [...origCtXml.matchAll(/<Override[^>]*\/xl\/tables\/[^>]*>/g)].map(
-		(m) => m[0],
-	);
-	if (tableOverrides.length) {
-		newZip.file('[Content_Types].xml', newCtXml.replace('</Types>', tableOverrides.join('\n') + '\n</Types>'));
-	}
-
-	return Buffer.from(
-		await newZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } }),
-	);
-}
-
-// Append a row to a named table → returns new xlsx buffer
+// Append a row to a named table (extends table ref by 1)
 export async function appendRowToTable(
-	originalBuffer: Buffer,
+	buffer: Buffer,
 	tableName: string,
 	rowData: IDataObject,
-	fileExt: string,
 ): Promise<Buffer> {
-	const tables = await extractTablesFromZip(originalBuffer);
-	const zt = findZipTable(tables, tableName);
-	const workbook = parseWorkbook(originalBuffer);
-	const sheet = workbook.Sheets[zt.sheetName];
+	const wb = await parseWorkbook(buffer);
+	const { sheet, table } = await findTableInWorkbook(wb, tableName);
+	const sr = tableStartRow(table.ref);
+	const er = tableEndRow(table.ref);
+	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
 
-	const range = xlsx.utils.decode_range(zt.ref);
-	const insertRow = range.e.r + 1;
-
-	zt.columns.forEach((col, colIdx) => {
-		const val = rowData[col] ?? '';
-		sheet[xlsx.utils.encode_cell({ r: insertRow, c: range.s.c + colIdx })] = {
-			v: val,
-			t: typeof val === 'number' ? 'n' : typeof val === 'boolean' ? 'b' : 's',
-		};
+	// Write new row after table end
+	const newRowNum = er + 1;
+	const newRow = sheet.getRow(newRowNum);
+	columns.forEach((col, i) => {
+		if (rowData[col] !== undefined) newRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
 	});
+	newRow.commit();
 
-	// Extend sheet ref
-	const sheetRange = xlsx.utils.decode_range(sheet['!ref'] ?? 'A1');
-	sheetRange.e.r = Math.max(sheetRange.e.r, insertRow);
-	sheet['!ref'] = xlsx.utils.encode_range(sheetRange);
-
-	const newTableRef = xlsx.utils.encode_range({ s: range.s, e: { r: insertRow, c: range.e.c } });
-	return buildXlsxWithTables(originalBuffer, workbook, fileExt, { [zt.zipPath]: newTableRef });
+	// Extend table ref
+	table.ref = extendTableRef(table.ref, newRowNum);
+	return saveWorkbook(wb);
 }
 
-// Update an existing row in a named table → returns new xlsx buffer
+// Update an existing row in a named table (rowIndex = 1-based data row)
 export async function updateRowInTable(
-	originalBuffer: Buffer,
+	buffer: Buffer,
 	tableName: string,
 	rowIndex: number,
 	rowData: IDataObject,
-	fileExt: string,
 ): Promise<Buffer> {
-	const tables = await extractTablesFromZip(originalBuffer);
-	const zt = findZipTable(tables, tableName);
-	const workbook = parseWorkbook(originalBuffer);
-	const sheet = workbook.Sheets[zt.sheetName];
+	const wb = await parseWorkbook(buffer);
+	const { sheet, table } = await findTableInWorkbook(wb, tableName);
+	const sr = tableStartRow(table.ref);
+	const er = tableEndRow(table.ref);
+	const dataRowCount = er - sr;
 
-	const range = xlsx.utils.decode_range(zt.ref);
-	const dataRowCount = range.e.r - range.s.r;
 	if (rowIndex < 1 || rowIndex > dataRowCount) {
-		throw new Error(`Row ${rowIndex} out of range — table "${tableName}" has ${dataRowCount} data row(s)`);
+		throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 	}
 
-	const targetRow = range.s.r + rowIndex;
-	zt.columns.forEach((col, colIdx) => {
-		if (rowData[col] !== undefined) {
-			const val = rowData[col];
-			sheet[xlsx.utils.encode_cell({ r: targetRow, c: range.s.c + colIdx })] = {
-				v: val,
-				t: typeof val === 'number' ? 'n' : typeof val === 'boolean' ? 'b' : 's',
-			};
-		}
+	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
+	const targetRow = sheet.getRow(sr + rowIndex);
+	columns.forEach((col, i) => {
+		if (rowData[col] !== undefined) targetRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
 	});
-
-	return buildXlsxWithTables(originalBuffer, workbook, fileExt);
+	targetRow.commit();
+	return saveWorkbook(wb);
 }
 
-// Delete a row from a named table → returns new xlsx buffer
+// Delete a row from a named table (rowIndex = 1-based data row)
 export async function deleteRowFromTable(
-	originalBuffer: Buffer,
+	buffer: Buffer,
 	tableName: string,
 	rowIndex: number,
-	fileExt: string,
 ): Promise<Buffer> {
-	const tables = await extractTablesFromZip(originalBuffer);
-	const zt = findZipTable(tables, tableName);
-	const workbook = parseWorkbook(originalBuffer);
-	const sheet = workbook.Sheets[zt.sheetName];
+	const wb = await parseWorkbook(buffer);
+	const { sheet, table } = await findTableInWorkbook(wb, tableName);
+	const sr = tableStartRow(table.ref);
+	const er = tableEndRow(table.ref);
+	const dataRowCount = er - sr;
 
-	const range = xlsx.utils.decode_range(zt.ref);
-	const dataRowCount = range.e.r - range.s.r;
 	if (rowIndex < 1 || rowIndex > dataRowCount) {
-		throw new Error(`Row ${rowIndex} out of range — table "${tableName}" has ${dataRowCount} data row(s)`);
+		throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 	}
 
-	const targetRow = range.s.r + rowIndex;
-
-	// Shift rows up
-	for (let r = targetRow; r < range.e.r; r++) {
-		for (let c = range.s.c; c <= range.e.c; c++) {
-			const src = sheet[xlsx.utils.encode_cell({ r: r + 1, c })];
-			const dst = xlsx.utils.encode_cell({ r, c });
-			if (src) {
-				sheet[dst] = { ...src };
-			} else {
-				delete sheet[dst];
-			}
-		}
-	}
-	for (let c = range.s.c; c <= range.e.c; c++) {
-		delete sheet[xlsx.utils.encode_cell({ r: range.e.r, c })];
-	}
-
-	const newTableRef = xlsx.utils.encode_range({ s: range.s, e: { r: range.e.r - 1, c: range.e.c } });
-	return buildXlsxWithTables(originalBuffer, workbook, fileExt, { [zt.zipPath]: newTableRef });
+	sheet.spliceRows(sr + rowIndex, 1);
+	table.ref = extendTableRef(table.ref, er - 1);
+	return saveWorkbook(wb);
 }
 
-// Load-options helper: returns all named tables in the selected file
-export async function getTablesForFile(
-	context: ILoadOptionsFunctions,
-	filePath: string,
-): Promise<INodePropertyOptions[]> {
+// ---------------------------------------------------------------------------
+// Sheet write operations (ExcelJS — preserves all Excel structure)
+// ---------------------------------------------------------------------------
+
+// Update ALL table refs that cover the given sheet to extend by delta rows
+function updateSheetTableRefs(sheet: ExcelJS.Worksheet, afterRow: number, delta: number): void {
+	const tables = (sheet as unknown as { tables: Record<string, { ref: string }> }).tables ?? {};
+	for (const [, table] of Object.entries(tables)) {
+		const er = tableEndRow(table.ref);
+		if (er >= afterRow) {
+			table.ref = extendTableRef(table.ref, er + delta);
+		}
+	}
+}
+
+export async function appendRowXml(
+	originalBuffer: Buffer,
+	sheetName: string,
+	globalHeaderIdx: number,  // 0-based
+	colStart: number,
+	colEnd: number,
+	rowData: IDataObject,
+	_wb: ExcelJS.Workbook,
+): Promise<Buffer> {
+	const wb = await parseWorkbook(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+
+	// Read headers from configured header row
+	const headerRow = globalHeaderIdx + 1; // 1-based
+	const headers: string[] = [];
+	for (let c = colStart + 1; c <= colEnd + 1; c++) {
+		const val = cellValue(sheet.getRow(headerRow).getCell(c));
+		headers.push(val ? String(val) : '');
+	}
+
+	// Find the last data row (start from last row of sheet or after last table row)
+	let lastRow = sheet.lastRow?.number ?? headerRow;
+	for (const [, table] of Object.entries((sheet as unknown as { tables: Record<string, { ref: string }> }).tables ?? {})) {
+		lastRow = Math.max(lastRow, tableEndRow(table.ref));
+	}
+	const newRowNum = lastRow + 1;
+
+	const newRow = sheet.getRow(newRowNum);
+	headers.forEach((h, i) => {
+		if (rowData[h] !== undefined) newRow.getCell(colStart + 1 + i).value = rowData[h] as ExcelJS.CellValue;
+	});
+	newRow.commit();
+
+	// Extend all table refs that end at or after the header row
+	updateSheetTableRefs(sheet, headerRow + 1, 1);
+
+	return saveWorkbook(wb);
+}
+
+export async function updateRowXml(
+	originalBuffer: Buffer,
+	sheetName: string,
+	globalHeaderIdx: number,
+	colStart: number,
+	colEnd: number,
+	rowIndex: number,
+	rowData: IDataObject,
+	_wb: ExcelJS.Workbook,
+): Promise<Buffer> {
+	const wb = await parseWorkbook(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+
+	const headerRow = globalHeaderIdx + 1;
+	const headers: string[] = [];
+	for (let c = colStart + 1; c <= colEnd + 1; c++) {
+		const val = cellValue(sheet.getRow(headerRow).getCell(c));
+		headers.push(val ? String(val) : '');
+	}
+
+	const targetRow = sheet.getRow(headerRow + rowIndex);
+	headers.forEach((h, i) => {
+		if (rowData[h] !== undefined) targetRow.getCell(colStart + 1 + i).value = rowData[h] as ExcelJS.CellValue;
+	});
+	targetRow.commit();
+	return saveWorkbook(wb);
+}
+
+export async function deleteRowXml(
+	originalBuffer: Buffer,
+	sheetName: string,
+	globalHeaderIdx: number,
+	rowIndex: number,
+): Promise<Buffer> {
+	const wb = await parseWorkbook(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+
+	const targetRowNum = globalHeaderIdx + 1 + rowIndex;
+	sheet.spliceRows(targetRowNum, 1);
+	updateSheetTableRefs(sheet, targetRowNum, -1);
+	return saveWorkbook(wb);
+}
+
+export async function clearSheetXml(
+	originalBuffer: Buffer,
+	sheetName: string,
+	globalHeaderIdx: number,
+): Promise<Buffer> {
+	const wb = await parseWorkbook(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
+
+	const firstDataRow = globalHeaderIdx + 2;
+	const lastRow = sheet.lastRow?.number ?? firstDataRow;
+	if (lastRow >= firstDataRow) {
+		sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
+	}
+	updateSheetTableRefs(sheet, firstDataRow, -(lastRow - firstDataRow + 1));
+	return saveWorkbook(wb);
+}
+
+// deleteRowFromSheet — used by Sheet resource Delete Row (legacy name kept for compat)
+export function deleteRowFromSheet(
+	_wb: ExcelJS.Workbook, _sheetName: string, _rowIndex: number, _headerRowIdx?: number,
+): void { /* replaced by deleteRowXml */ }
+
+// ---------------------------------------------------------------------------
+// Load-options helpers
+// ---------------------------------------------------------------------------
+
+const SPREADSHEET_MIME = [
+	'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+	'application/vnd.ms-excel',
+	'application/vnd.oasis.opendocument.spreadsheet',
+	'text/csv',
+];
+const SPREADSHEET_EXT = ['xlsx', 'xls', 'ods', 'csv', 'xlsm'];
+
+function isSpreadsheet(entry: DavEntry): boolean {
+	const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
+	return SPREADSHEET_MIME.includes(entry.contentType) || SPREADSHEET_EXT.includes(ext);
+}
+
+function entryToRel(entry: DavEntry, user: string): string {
+	return ('/' + entry.href.replace(`/remote.php/dav/files/${encodeURIComponent(user)}/`, '')).replace('//', '/');
+}
+
+export async function getFolders(context: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const result: INodePropertyOptions[] = [{ name: '/ (root)', value: '/' }];
+	const rootEntries = await listDirectory(context, creds, '/', '1');
+
+	await Promise.all(
+		rootEntries.filter(e => e.isDirectory).map(async dir => {
+			const rel = entryToRel(dir, creds.user);
+			result.push({ name: `📁 ${dir.name}`, value: rel });
+			try {
+				const subEntries = await listDirectory(context, creds, rel, '1');
+				for (const sub of subEntries.filter(e => e.isDirectory)) {
+					result.push({ name: `　└ ${sub.name}  (${dir.name})`, value: entryToRel(sub, creds.user) });
+				}
+			} catch { /* skip inaccessible */ }
+		}),
+	);
+	return result;
+}
+
+export async function getSpreadsheetFiles(context: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const folderPath = (context.getNodeParameter('folderPath', '/') as string) || '/';
+	const entries = await listDirectory(context, creds, folderPath, '1');
+	const files = entries
+		.filter(e => !e.isDirectory && isSpreadsheet(e))
+		.map(e => ({ name: e.name, value: entryToRel(e, creds.user) }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+	return files;
+}
+
+export async function getSheetsForFile(context: ILoadOptionsFunctions, filePath: string): Promise<INodePropertyOptions[]> {
 	const creds = await getCredentials(context);
 	const buffer = await downloadFile(context, creds, filePath);
+	const wb = await parseWorkbook(buffer);
+	return wb.worksheets.map(ws => ({ name: ws.name, value: ws.name }));
+}
 
-	// Diagnostic: check whether any xl/tables/*.xml files exist in the ZIP
-	let tableFilesInZip = 0;
-	try {
-		const zip = await JSZip.loadAsync(buffer);
-		tableFilesInZip = Object.keys(zip.files).filter((p) => /xl[/\\]tables[/\\]/i.test(p)).length;
-	} catch { /* not a zip */ }
-
-	const tables = await extractTablesFromZip(buffer);
+export async function getTablesForFile(context: ILoadOptionsFunctions, filePath: string): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const buffer = await downloadFile(context, creds, filePath);
+	const tables = await getWorkbookTables(buffer);
 
 	if (tables.length === 0) {
-		if (tableFilesInZip === 0) {
-			// File has NO table XML at all → genuinely no Excel Table
-			return [{
-				name: '⚠ Ce fichier ne contient pas de tableau Excel nommé. Utilisez Insert → Tableau dans Excel, ou passez en mode "By Name" pour saisir le nom manuellement.',
-				value: '',
-			}];
-		}
-		// Table XML files exist but sheet mapping failed
-		return [{
-			name: `⚠ ${tableFilesInZip} tableau(x) trouvé(s) dans le fichier mais impossible de lier aux feuilles. Passez en mode "By Name" et saisissez le nom du tableau.`,
-			value: '',
-		}];
+		return [{ name: '⚠ Aucun tableau Excel nommé — utilisez Insert → Tableau dans Excel, ou passez en mode "By Name"', value: '' }];
 	}
+	return tables.map(t => ({
+		name: `${t.displayName}  [${t.sheetName} · ${t.ref} · ${t.dataRowCount} rows]`,
+		value: t.name,
+	}));
+}
 
-	return tables.map((t) => {
-		const range = xlsx.utils.decode_range(t.ref);
-		const dataRows = Math.max(0, range.e.r - range.s.r);
-		return {
-			name: `${t.displayName}  [${t.sheetName} · ${t.ref} · ${dataRows} rows]`,
-			value: t.name,
-		};
-	});
+export async function searchSpreadsheetFiles(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
+	const creds = await getCredentials(context);
+	const results: INodeListSearchResult['results'] = [];
+
+	const rootEntries = await listDirectory(context, creds, '/', '1');
+	for (const e of rootEntries) {
+		if (!e.isDirectory && isSpreadsheet(e)) {
+			if (!filter || e.name.toLowerCase().includes(filter.toLowerCase()))
+				results.push({ name: e.name, value: entryToRel(e, creds.user) });
+		}
+	}
+	await Promise.all(rootEntries.filter(e => e.isDirectory).map(async dir => {
+		try {
+			const sub = await listDirectory(context, creds, entryToRel(dir, creds.user), '1');
+			for (const e of sub) {
+				if (!e.isDirectory && isSpreadsheet(e) && (!filter || e.name.toLowerCase().includes(filter.toLowerCase())))
+					results.push({ name: `${e.name}  (${dir.name})`, value: entryToRel(e, creds.user) });
+			}
+		} catch { /* skip */ }
+	}));
+	results.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+	return { results };
+}
+
+export async function searchSheetsForFile(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
+	const mode = context.getNodeParameter('filePathMode', 'list') as string;
+	const filePath = mode === 'list' ? (context.getNodeParameter('filePathFromList', '') as string) : (context.getNodeParameter('filePath', '') as string);
+	if (!filePath) return { results: [] };
+	const creds = await getCredentials(context);
+	const buffer = await downloadFile(context, creds, filePath);
+	const wb = await parseWorkbook(buffer);
+	return {
+		results: wb.worksheets
+			.filter(ws => !filter || ws.name.toLowerCase().includes(filter.toLowerCase()))
+			.map(ws => ({ name: ws.name, value: ws.name })),
+	};
+}
+
+export async function searchTablesForFile(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
+	const mode = context.getNodeParameter('filePathMode', 'list') as string;
+	const filePath = mode === 'list' ? (context.getNodeParameter('filePathFromList', '') as string) : (context.getNodeParameter('filePath', '') as string);
+	if (!filePath) return { results: [] };
+	const creds = await getCredentials(context);
+	const buffer = await downloadFile(context, creds, filePath);
+	const tables = await getWorkbookTables(buffer);
+	return {
+		results: tables
+			.filter(t => !filter || t.displayName.toLowerCase().includes(filter.toLowerCase()))
+			.map(t => ({
+				name: `${t.displayName}  [${t.sheetName} · ${t.ref} · ${t.dataRowCount} rows]`,
+				value: t.name,
+			})),
+	};
 }
