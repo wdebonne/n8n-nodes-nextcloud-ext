@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-nextcloud-ext",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "description": "n8n community nodes for Nextcloud — file management (list, upload, download, share) and spreadsheet operations equivalent to the Microsoft 365 Excel node, including named Excel table support",
   "keywords": [
     "n8n-community-node-package",
@@ -50,7 +50,8 @@
     ],
     "nodes": [
       "dist/nodes/NextCloud/NextCloud.node.js",
-      "dist/nodes/NextCloudSpreadsheet/NextCloudSpreadsheet.node.js"
+      "dist/nodes/NextCloudSpreadsheet/NextCloudSpreadsheet.node.js",
+      "dist/nodes/NextCloudDocTemplate/NextCloudDocTemplate.node.js"
     ]
   },
   "devDependencies": {
@@ -63,6 +64,7 @@
     "typescript": "^5.1.6"
   },
   "dependencies": {
+    "carbone": "^3.8.2",
     "exceljs": "^4.4.0",
     "fast-xml-parser": "^4.3.6",
     "jszip": "^3.10.1",

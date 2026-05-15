@@ -11,6 +11,9 @@ import {
 import { XMLParser } from 'fast-xml-parser';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import os from 'os';
+import fs from 'fs';
+import path from 'path';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const XlsxPopulate = require('xlsx-populate') as {
 	fromDataAsync(data: Buffer): Promise<XlsxPopulateWorkbook>;
@@ -895,4 +898,122 @@ export async function searchTablesForFile(context: ILoadOptionsFunctions, filter
 				value: t.name,
 			})),
 	};
+}
+
+// ---------------------------------------------------------------------------
+// DOCX template helpers — Carbone + JSZip
+// ---------------------------------------------------------------------------
+
+interface CarboneInstance {
+	render(
+		templatePath: string,
+		data: Record<string, unknown>,
+		options: Record<string, unknown>,
+		callback: (err: Error | null, result: Buffer) => void,
+	): void;
+	render(
+		templatePath: string,
+		data: Record<string, unknown>,
+		callback: (err: Error | null, result: Buffer) => void,
+	): void;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const carbone = require('carbone') as CarboneInstance;
+
+const DOC_EXT = ['docx', 'odt'];
+
+function isDocFile(entry: DavEntry): boolean {
+	const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
+	return DOC_EXT.includes(ext);
+}
+
+export async function getDocFiles(context: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const folderPath = (context.getNodeParameter('folderPath', '/') as string) || '/';
+	const entries = await listDirectory(context, creds, folderPath, '1');
+	return entries
+		.filter(e => !e.isDirectory && isDocFile(e))
+		.map(e => ({ name: e.name, value: entryToRel(e, creds.user) }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function searchDocFiles(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
+	const creds = await getCredentials(context);
+	const results: INodeListSearchResult['results'] = [];
+	const rootEntries = await listDirectory(context, creds, '/', '1');
+	for (const e of rootEntries) {
+		if (!e.isDirectory && isDocFile(e)) {
+			if (!filter || e.name.toLowerCase().includes(filter.toLowerCase()))
+				results.push({ name: e.name, value: entryToRel(e, creds.user) });
+		}
+	}
+	await Promise.all(rootEntries.filter(e => e.isDirectory).map(async dir => {
+		try {
+			const sub = await listDirectory(context, creds, entryToRel(dir, creds.user), '1');
+			for (const e of sub) {
+				if (!e.isDirectory && isDocFile(e) && (!filter || e.name.toLowerCase().includes(filter.toLowerCase())))
+					results.push({ name: `${e.name}  (${dir.name})`, value: entryToRel(e, creds.user) });
+			}
+		} catch { /* skip inaccessible */ }
+	}));
+	results.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+	return { results };
+}
+
+// Extract {d.variable} placeholders from a DOCX/ODT buffer using JSZip
+export async function extractCarboneVariables(buffer: Buffer): Promise<string[]> {
+	const zip = await JSZip.loadAsync(buffer);
+	const variables = new Set<string>();
+
+	// Determine format: DOCX uses word/document.xml, ODT uses content.xml
+	const isOdt = 'content.xml' in zip.files;
+	const targetFiles = isOdt
+		? ['content.xml']
+		: Object.keys(zip.files).filter(f =>
+			f === 'word/document.xml' ||
+			/^word\/header\d*\.xml$/.test(f) ||
+			/^word\/footer\d*\.xml$/.test(f),
+		);
+
+	// Regex matches {d.path}, {!d.path}, and {d.path:formatter}, {d.cond ? 'a' : 'b'}
+	const carboneTagRe = /\{[!]?d\.([a-zA-Z_][\w.[\]]*?)(?:[?:!|][^}]*)?\}/g;
+
+	for (const xmlFile of targetFiles) {
+		try {
+			const file = zip.file(xmlFile);
+			if (!file) continue;
+			let content = await file.async('string');
+			// Normalize: join text runs split across XML tags (common in DOCX)
+			content = content.replace(/<\/w:t>[\s\S]*?<w:t[^>]*>/g, '');
+			for (const m of content.matchAll(carboneTagRe)) {
+				const varPath = m[1].trim();
+				if (varPath) variables.add(varPath);
+			}
+		} catch { /* skip */ }
+	}
+
+	return [...variables].sort();
+}
+
+// Render a Carbone template (DOCX/ODT buffer) with the given data
+export async function renderCarboneTemplate(
+	buffer: Buffer,
+	data: Record<string, unknown>,
+): Promise<Buffer> {
+	const tmpDir = os.tmpdir();
+	const uid = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+	const inputPath = path.join(tmpDir, `nc_carbone_${uid}.docx`);
+
+	try {
+		fs.writeFileSync(inputPath, buffer);
+		return await new Promise<Buffer>((resolve, reject) => {
+			carbone.render(inputPath, data, {}, (err: Error | null, result: Buffer) => {
+				if (err) reject(err);
+				else resolve(result);
+			});
+		});
+	} finally {
+		try { fs.unlinkSync(inputPath); } catch { /* ignore cleanup errors */ }
+	}
 }

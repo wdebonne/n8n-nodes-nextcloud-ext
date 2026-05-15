@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.32] — 2026-05-15
+
+### Ajouté
+- **Node Nextcloud Doc Template** : nouveau node pour générer des documents DOCX/ODT à partir de templates stockés sur Nextcloud, en utilisant le moteur **Carbone** (syntaxe identique à `n8n-nodes-carbonejs`).
+  - Opération **Fill Template** : télécharge le template via WebDAV, injecte les données, sauvegarde le résultat sur Nextcloud ou retourne un binaire.
+  - Opération **Get Variables** : scanne le template et retourne tous les placeholders `{d.xxx}` trouvés.
+  - Mode **Key-Value Pairs** : saisie variable par variable avec dropdown auto-chargé depuis le template.
+  - Mode **JSON Object** : passage d'un objet JSON complet pour les boucles (`{d.lignes[i].champ}`) et la génération de pages dynamiques sans multiplier les templates.
+  - Sortie **Save to Nextcloud** : chemin de sortie configurable avec expressions n8n.
+  - Sortie **Return as Binary** : retourne le DOCX rempli pour envoi email ou téléchargement.
+- **GUIDE_NEXTCLOUD_DOC.md** : guide complet avec exemples de templates, syntaxe Carbone, workflows et dépannage.
+
+---
+
 ## [1.0.31] — 2025-05-15
 
 ### Corrigé

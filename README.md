@@ -16,6 +16,7 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 |---|---|---|
 | **Nextcloud** | OneDrive | Gestion de fichiers et dossiers via WebDAV |
 | **Nextcloud Spreadsheet** | Excel | Lecture/écriture de fichiers tableur + tables nommées |
+| **Nextcloud Doc Template** | Word (Mail Merge) | Remplissage de templates DOCX/ODT via syntaxe Carbone ({d.variable}) |
 
 ---
 
@@ -257,6 +258,103 @@ npm run build && npm link
 npm link n8n-nodes-nextcloud-ext
 # Redémarrer n8n
 ```
+
+---
+
+---
+
+## Node — Nextcloud Doc Template
+
+Génère des documents Word/ODT à partir de templates stockés sur Nextcloud, en utilisant la syntaxe **Carbone** — identique à `n8n-nodes-carbonejs` mais avec votre instance Nextcloud.
+
+> Supporte les variables simples ET les **boucles sur tableaux** pour générer plusieurs pages/sections dynamiquement, sans multiplier les templates.
+
+### Syntaxe Carbone dans les templates
+
+| Placeholder dans le document | Description |
+|---|---|
+| `{d.nom}` | Valeur simple |
+| `{d.date:formatD('DD/MM/YYYY')}` | Valeur avec formateur de date |
+| `{d.montant:toFixed(2)}` | Valeur numérique formatée |
+| `{d.lignes[i].designation}` | Répétition d'un tableau ou d'une section pour chaque item |
+| `{d.lignes[i+1].designation}` | Fin de la boucle (marque la dernière colonne) |
+| `{d.actif ? 'Oui' : 'Non'}` | Condition |
+
+### Operations
+
+| Opération | Description |
+|---|---|
+| **Fill Template** | Télécharge le template Nextcloud, injecte les données, sauvegarde le résultat |
+| **Get Variables** | Scanne le template et retourne tous les `{d.xxx}` trouvés |
+
+### Modes de données (Fill Template)
+
+**Key-Value Pairs** — pour les documents simples :
+```
+Template Variables:
+  nom       → {{ $json.nom_client }}
+  date      → {{ $now.format('DD/MM/YYYY') }}
+  reference → REF-{{ $json.id }}
+```
+
+**JSON Object** — pour les boucles et pages dynamiques :
+```json
+{
+  "client": "ACME Corp",
+  "lignes": [
+    { "designation": "Prestation A", "qte": 2, "prix": 150 },
+    { "designation": "Prestation B", "qte": 1, "prix": 300 }
+  ]
+}
+```
+→ Dans le template, un tableau avec `{d.lignes[i].designation}` se répète automatiquement pour chaque ligne.
+
+### Modes de sortie
+
+| Mode | Description |
+|---|---|
+| **Save to Nextcloud** | Sauvegarde le document rempli sur Nextcloud (chemin à spécifier) |
+| **Return as Binary** | Retourne le document en binaire (pour envoi par email, téléchargement, etc.) |
+
+### Workflow typique — génération de contrat
+
+```
+1. Form Trigger (ou HTTP Request)
+   └─ Données du formulaire : nom_client, adresse, montant
+
+2. Nextcloud Doc Template
+   ├─ Template : /Templates/contrat.docx
+   ├─ Data Mode : Key-Value Pairs
+   │   nom_client → {{ $json.nom_client }}
+   │   adresse    → {{ $json.adresse }}
+   │   montant    → {{ $json.montant }}
+   └─ Output : Save to Nextcloud → /Contrats/contrat_{{ $json.nom_client }}.docx
+
+3. (Optionnel) Send Email
+   └─ Attachment : binary "data" du node précédent (mode Return as Binary)
+```
+
+### Pages dynamiques — exemple facture
+
+Template Word avec un tableau :
+
+| Désignation | Qté | Prix |
+|---|---|---|
+| `{d.lignes[i].designation}` | `{d.lignes[i].qte}` | `{d.lignes[i].prix}` |
+| `{d.lignes[i+1].designation}` | | |
+
+Données JSON passées au node :
+```json
+{
+  "numero": "FAC-2025-001",
+  "client": "ACME",
+  "lignes": [
+    { "designation": "Développement", "qte": 5, "prix": 800 },
+    { "designation": "Formation", "qte": 2, "prix": 400 }
+  ]
+}
+```
+→ Carbone répète les lignes du tableau automatiquement. Pour répéter des **pages entières**, créez une section avec saut de page dans le template et utilisez `{d.pages[i].xxx}`.
 
 ---
 
