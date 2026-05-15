@@ -11,6 +11,24 @@ import {
 import { XMLParser } from 'fast-xml-parser';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const XlsxPopulate = require('xlsx-populate') as {
+	fromDataAsync(data: Buffer): Promise<XlsxPopulateWorkbook>;
+};
+interface XlsxPopulateWorkbook {
+	sheet(name: string): XlsxPopulateSheet | undefined;
+	outputAsync(): Promise<Buffer>;
+}
+interface XlsxPopulateSheet {
+	cell(row: number, col: number): XlsxPopulateCell;
+	usedRange(): { forEach(fn: (cell: XlsxPopulateCell) => void): void } | undefined;
+}
+interface XlsxPopulateCell {
+	value(): unknown;
+	value(v: unknown): XlsxPopulateCell;
+	rowNumber(): number;
+	columnNumber(): number;
+}
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -593,9 +611,30 @@ export async function deleteRowFromTable(
 }
 
 // ---------------------------------------------------------------------------
-// Sheet write operations — ExcelJS only, no internal table manipulation
-// ExcelJS preserves table XML natively; we never touch worksheet._tables
+// Sheet write operations — xlsx-populate (modifies only the changed cells,
+// preserves ALL original XML including tables, styles, merged cells, etc.)
 // ---------------------------------------------------------------------------
+
+function xlsxLastRow(sheet: XlsxPopulateSheet, minRow: number): number {
+	let last = minRow;
+	sheet.usedRange()?.forEach(cell => { if (cell.rowNumber() > last) last = cell.rowNumber(); });
+	return last;
+}
+
+function xlsxMaxCol(sheet: XlsxPopulateSheet): number {
+	let max = 1;
+	sheet.usedRange()?.forEach(cell => { if (cell.columnNumber() > max) max = cell.columnNumber(); });
+	return max;
+}
+
+function xlsxHeaders(sheet: XlsxPopulateSheet, headerRowNum: number, colStart: number, colEnd: number): string[] {
+	const headers: string[] = [];
+	for (let c = colStart + 1; c <= colEnd + 1; c++) {
+		const v = sheet.cell(headerRowNum, c).value();
+		headers.push(v !== null && v !== undefined ? String(v) : '');
+	}
+	return headers;
+}
 
 export async function appendRowXml(
 	originalBuffer: Buffer,
@@ -606,24 +645,19 @@ export async function appendRowXml(
 	rowData: IDataObject,
 	_wb: ExcelJS.Workbook,
 ): Promise<Buffer> {
-	const wb = await parseWorkbook(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
+	const wb = await XlsxPopulate.fromDataAsync(originalBuffer);
+	const sheet = wb.sheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	const headerRow = globalHeaderIdx + 1; // 1-based
-	const headers: string[] = [];
-	for (let c = colStart + 1; c <= colEnd + 1; c++) {
-		const val = cellValue(sheet.getRow(headerRow).getCell(c));
-		headers.push(val ? String(val) : '');
-	}
+	const headerRowNum = globalHeaderIdx + 1; // 1-based
+	const headers = xlsxHeaders(sheet, headerRowNum, colStart, colEnd);
+	const newRowNum = xlsxLastRow(sheet, headerRowNum) + 1;
 
-	const newRowNum = (sheet.lastRow?.number ?? headerRow) + 1;
-	const newRow = sheet.getRow(newRowNum);
 	headers.forEach((h, i) => {
-		if (rowData[h] !== undefined) newRow.getCell(colStart + 1 + i).value = rowData[h] as ExcelJS.CellValue;
+		if (rowData[h] !== undefined) sheet.cell(newRowNum, colStart + 1 + i).value(rowData[h]);
 	});
-	newRow.commit();
-	return saveWorkbook(wb);
+
+	return wb.outputAsync();
 }
 
 export async function updateRowXml(
@@ -636,23 +670,19 @@ export async function updateRowXml(
 	rowData: IDataObject,
 	_wb: ExcelJS.Workbook,
 ): Promise<Buffer> {
-	const wb = await parseWorkbook(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
+	const wb = await XlsxPopulate.fromDataAsync(originalBuffer);
+	const sheet = wb.sheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	const headerRow = globalHeaderIdx + 1;
-	const headers: string[] = [];
-	for (let c = colStart + 1; c <= colEnd + 1; c++) {
-		const val = cellValue(sheet.getRow(headerRow).getCell(c));
-		headers.push(val ? String(val) : '');
-	}
+	const headerRowNum = globalHeaderIdx + 1;
+	const headers = xlsxHeaders(sheet, headerRowNum, colStart, colEnd);
+	const targetRowNum = headerRowNum + rowIndex;
 
-	const targetRow = sheet.getRow(headerRow + rowIndex);
 	headers.forEach((h, i) => {
-		if (rowData[h] !== undefined) targetRow.getCell(colStart + 1 + i).value = rowData[h] as ExcelJS.CellValue;
+		if (rowData[h] !== undefined) sheet.cell(targetRowNum, colStart + 1 + i).value(rowData[h]);
 	});
-	targetRow.commit();
-	return saveWorkbook(wb);
+
+	return wb.outputAsync();
 }
 
 export async function deleteRowXml(
@@ -661,11 +691,24 @@ export async function deleteRowXml(
 	globalHeaderIdx: number,
 	rowIndex: number,
 ): Promise<Buffer> {
-	const wb = await parseWorkbook(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
+	const wb = await XlsxPopulate.fromDataAsync(originalBuffer);
+	const sheet = wb.sheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-	sheet.spliceRows(globalHeaderIdx + 1 + rowIndex, 1);
-	return saveWorkbook(wb);
+
+	const targetRowNum = globalHeaderIdx + 1 + rowIndex;
+	const lastRowNum = xlsxLastRow(sheet, targetRowNum);
+	const maxCol = xlsxMaxCol(sheet);
+
+	// Shift all rows after target up by 1
+	for (let r = targetRowNum; r < lastRowNum; r++) {
+		for (let c = 1; c <= maxCol; c++) {
+			sheet.cell(r, c).value(sheet.cell(r + 1, c).value());
+		}
+	}
+	// Clear the vacated last row
+	for (let c = 1; c <= maxCol; c++) sheet.cell(lastRowNum, c).value(null);
+
+	return wb.outputAsync();
 }
 
 export async function clearSheetXml(
@@ -673,13 +716,19 @@ export async function clearSheetXml(
 	sheetName: string,
 	globalHeaderIdx: number,
 ): Promise<Buffer> {
-	const wb = await parseWorkbook(originalBuffer);
-	const sheet = wb.getWorksheet(sheetName);
+	const wb = await XlsxPopulate.fromDataAsync(originalBuffer);
+	const sheet = wb.sheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-	const firstDataRow = globalHeaderIdx + 2;
-	const lastRow = sheet.lastRow?.number ?? firstDataRow;
-	if (lastRow >= firstDataRow) sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
-	return saveWorkbook(wb);
+
+	const firstDataRowNum = globalHeaderIdx + 2;
+	const lastRowNum = xlsxLastRow(sheet, firstDataRowNum);
+	const maxCol = xlsxMaxCol(sheet);
+
+	for (let r = firstDataRowNum; r <= lastRowNum; r++) {
+		for (let c = 1; c <= maxCol; c++) sheet.cell(r, c).value(null);
+	}
+
+	return wb.outputAsync();
 }
 
 // deleteRowFromSheet — used by Sheet resource Delete Row (legacy name kept for compat)
