@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.33] — 2026-05-15
+
+### Ajouté
+- **Node Nextcloud PDF** : nouveau node pour lire et remplir les champs de formulaire AcroForm de PDFs stockés sur Nextcloud (bibliothèque `pdf-lib`).
+  - Opération **Get Fields** : télécharge le PDF, extrait tous les champs de formulaire et les retourne en JSON structuré avec :
+    - `values` : objet plat `{ nomDuChamp: valeur }` pour utilisation directe dans les expressions n8n (`{{ $json.values.NomChamp }}`).
+    - `fields` : tableau détaillé avec `name`, `type`, `value`, `options` (pour radio/dropdown/liste), `required`, `readOnly`.
+    - Types supportés : `text`, `checkbox`, `radio`, `dropdown`, `optionList`, `signature`, `button`.
+    - Cases à cocher : valeur booléenne `true`/`false`.
+  - Opération **Fill Fields** : remplit les champs et sauvegarde ou retourne le PDF en binaire.
+    - Mode **Paires Clé-Valeur** : saisie champ par champ avec dropdown auto-chargé depuis le PDF.
+    - Mode **Objet JSON** : passage d'un objet JSON complet — idéal pour les webhooks et formulaires en ligne.
+    - Cases à cocher intelligentes : accepte `Oui/Non`, `Yes/No`, `True/False`, `1/0`, `Vrai/Faux` (insensible à la casse).
+    - Option **Aplatir le formulaire** : rend les champs non modifiables après remplissage.
+    - Sortie **Sauvegarder sur Nextcloud** : chemin configurable avec expressions n8n.
+    - Sortie **Retourner en binaire** : retourne le PDF rempli pour envoi email ou téléchargement.
+
+---
+
 ## [1.0.32] — 2026-05-15
 
 ### Ajouté

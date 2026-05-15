@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![n8n community node](https://img.shields.io/badge/n8n-community%20node-orange)](https://docs.n8n.io/integrations/community-nodes/)
 
-Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des nodes Microsoft 365 (OneDrive + Excel).
+Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des nodes Microsoft 365 (OneDrive + Excel + Word) avec en plus la gestion des formulaires PDF.
 
-> Gérez vos fichiers Nextcloud et manipulez vos feuilles de calcul (`.xlsx`, `.ods`, `.csv`) — y compris les **tables Excel nommées** — directement depuis vos workflows n8n, sans aucune dépendance au cloud Microsoft.
+> Gérez vos fichiers Nextcloud, manipulez vos feuilles de calcul (`.xlsx`, `.ods`, `.csv`) avec les **tables Excel nommées**, générez des documents depuis des templates, et lisez/remplissez vos **formulaires PDF** — directement depuis vos workflows n8n, sans aucune dépendance au cloud Microsoft.
 
 ---
 
@@ -17,6 +17,7 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 | **Nextcloud** | OneDrive | Gestion de fichiers et dossiers via WebDAV |
 | **Nextcloud Spreadsheet** | Excel | Lecture/écriture de fichiers tableur + tables nommées |
 | **Nextcloud Doc Template** | Word (Mail Merge) | Remplissage de templates DOCX/ODT via syntaxe Carbone ({d.variable}) |
+| **Nextcloud PDF** | — | Lecture et remplissage des champs de formulaire AcroForm de PDFs |
 
 ---
 
@@ -355,6 +356,72 @@ Données JSON passées au node :
 }
 ```
 → Carbone répète les lignes du tableau automatiquement. Pour répéter des **pages entières**, créez une section avec saut de page dans le template et utilisez `{d.pages[i].xxx}`.
+
+---
+
+## Node — Nextcloud PDF
+
+Lecture et remplissage des champs de formulaire **AcroForm** de PDFs stockés sur Nextcloud (bibliothèque `pdf-lib`).
+
+### Opération : Get Fields
+
+Extrait tous les champs du formulaire PDF et les retourne en JSON.
+
+**Sortie JSON :**
+```json
+{
+  "pdfPath": "/Documents/Formulaires/inscription.pdf",
+  "count": 5,
+  "values": {
+    "Nom": "Dupont",
+    "Prénom": "Jean",
+    "Etudiant": true,
+    "Couleur": "Bleu",
+    "Pays": "France"
+  },
+  "fields": [
+    { "name": "Nom", "type": "text", "value": "Dupont", "required": false, "readOnly": false },
+    { "name": "Etudiant", "type": "checkbox", "value": true, "required": false, "readOnly": false },
+    { "name": "Couleur", "type": "radio", "value": "Bleu", "options": ["Rouge", "Vert", "Bleu"], "required": false, "readOnly": false },
+    { "name": "Pays", "type": "dropdown", "value": "France", "options": ["France", "Belgique", "Suisse"], "required": false, "readOnly": false },
+    { "name": "Compétences", "type": "optionList", "value": ["TypeScript", "Python"], "options": ["TypeScript", "Python", "Go"], "required": false, "readOnly": false }
+  ]
+}
+```
+
+- `values` : accès direct par nom de champ — `{{ $json.values.Nom }}`
+- `fields` : détail complet avec type et options disponibles
+- Types supportés : `text`, `checkbox`, `radio`, `dropdown`, `optionList`, `signature`, `button`
+
+### Opération : Fill Fields
+
+Remplit les champs du formulaire PDF puis sauvegarde sur Nextcloud ou retourne en binaire.
+
+| Paramètre | Description |
+|---|---|
+| **Mode de saisie** | *Paires Clé-Valeur* (champ par champ) ou *Objet JSON* (depuis webhook, formulaire…) |
+| **Aplatir le formulaire** | Rend les champs non modifiables après remplissage |
+| **Mode de sortie** | *Sauvegarder sur Nextcloud* ou *Retourner en binaire* |
+
+**Valeurs acceptées pour les cases à cocher :**
+
+| Coché | Non coché |
+|---|---|
+| `true`, `True`, `TRUE` | `false`, `False`, `FALSE` |
+| `Oui`, `oui`, `OUI` | `Non`, `non`, `NON` |
+| `Yes`, `yes`, `YES` | `No`, `no`, `NO` |
+| `1`, `Vrai`, `vrai` | `0`, `Faux`, `faux` |
+
+**Exemple — workflow avec Webhook → PDF Fill :**
+
+```
+Webhook (formulaire en ligne)
+  → Nextcloud PDF [Fill Fields, mode JSON]
+      jsonData = {{ $json.body }}
+      outputPath = /Inscriptions/{{ $json.body.Nom }}_inscription.pdf
+```
+
+Si le webhook reçoit `{ "Nom": "Dupont", "Etudiant": "Oui", "Couleur": "Rouge" }`, le PDF est automatiquement rempli et sauvegardé sur Nextcloud.
 
 ---
 

@@ -900,6 +900,47 @@ export async function searchTablesForFile(context: ILoadOptionsFunctions, filter
 }
 
 // ---------------------------------------------------------------------------
+// PDF helpers
+// ---------------------------------------------------------------------------
+
+function isPdfFile(entry: DavEntry): boolean {
+	return entry.name.toLowerCase().endsWith('.pdf');
+}
+
+export async function getPdfFiles(context: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	const creds = await getCredentials(context);
+	const folderPath = (context.getNodeParameter('folderPath', '/') as string) || '/';
+	const entries = await listDirectory(context, creds, folderPath, '1');
+	return entries
+		.filter(e => !e.isDirectory && isPdfFile(e))
+		.map(e => ({ name: e.name, value: entryToRel(e, creds.user) }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function searchPdfFiles(context: ILoadOptionsFunctions, filter?: string): Promise<INodeListSearchResult> {
+	const creds = await getCredentials(context);
+	const results: INodeListSearchResult['results'] = [];
+	const rootEntries = await listDirectory(context, creds, '/', '1');
+	for (const e of rootEntries) {
+		if (!e.isDirectory && isPdfFile(e)) {
+			if (!filter || e.name.toLowerCase().includes(filter.toLowerCase()))
+				results.push({ name: e.name, value: entryToRel(e, creds.user) });
+		}
+	}
+	await Promise.all(rootEntries.filter(e => e.isDirectory).map(async dir => {
+		try {
+			const sub = await listDirectory(context, creds, entryToRel(dir, creds.user), '1');
+			for (const e of sub) {
+				if (!e.isDirectory && isPdfFile(e) && (!filter || e.name.toLowerCase().includes(filter.toLowerCase())))
+					results.push({ name: `${e.name}  (${dir.name})`, value: entryToRel(e, creds.user) });
+			}
+		} catch { /* skip inaccessible */ }
+	}));
+	results.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+	return { results };
+}
+
+// ---------------------------------------------------------------------------
 // DOCX template helpers — Carbone + JSZip
 // ---------------------------------------------------------------------------
 
