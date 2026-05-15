@@ -14,7 +14,6 @@ import JSZip from 'jszip';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const XlsxPopulate = require('xlsx-populate') as {
 	fromDataAsync(data: Buffer): Promise<XlsxPopulateWorkbook>;
 };
@@ -918,7 +917,6 @@ interface CarboneInstance {
 	): void;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const carbone = require('carbone') as CarboneInstance;
 
 const DOC_EXT = ['docx', 'odt'];
