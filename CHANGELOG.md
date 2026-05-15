@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.31] — 2025-05-15
+
+### Corrigé
+- **`__rowNumber` incorrect après filtre** : quand un filtre de valeur (N° = 8271) était appliqué, `__rowNumber` retournait la position dans les résultats filtrés (toujours `1`) au lieu de la position réelle dans la table. La ligne ciblée par Update Row ou Delete Row était donc erronée. Correction : `__rowNumber` est maintenant attribué AVANT l'application des filtres.
+
+---
+
+## [1.0.30] — 2025-05-15
+
+### Modifié
+- README mis à jour sur npmjs.com avec la documentation complète de toutes les fonctionnalités (Header Row, Table Get Rows options, workflow Get Rows → Update Row, etc.).
+
+---
+
 ## [1.0.29] — 2025-05-15
 
 ### Ajouté
