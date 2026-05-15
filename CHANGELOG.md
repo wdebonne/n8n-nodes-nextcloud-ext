@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.35] — 2026-05-15
+
+### Modifié — Nextcloud PDF
+
+- **Sélecteur de dossier de sortie** (Fill Fields) : remplacement du champ "Chemin de sortie" (texte libre) par un sélecteur en deux champs — *Dossier de sortie* (dropdown arborescent) + *Nom du fichier de sortie* (nom seul, supporte les expressions). L'ancien mode "Par chemin complet (expression)" reste disponible.
+
+---
+
 ## [1.0.34] — 2026-05-15
 
 ### Modifié — Nextcloud Doc Template
