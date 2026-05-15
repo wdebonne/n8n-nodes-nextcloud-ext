@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.39] — 2026-05-15
+
+### Documentation
+- **README.md** : refonte complète — documentation exhaustive des 4 nodes (NextCloud Folder, Spreadsheet, Doc Template, PDF) avec toutes les options, conditions, formats de sortie, syntaxe Carbone, annexes conditionnelles et workflows typiques.
+- **GUIDE_NEXTCLOUD_DOC.md** : mise à jour complète — ajout des sections annexes conditionnelles (configuration, conditions, chemin dynamique), format de sortie PDF, sélecteur de dossier de sortie, et 4 workflows complets avec exemples.
+
+---
+
 ## [1.0.38] — 2026-05-15
 
 ### Modifié — NextCloud Doc Template : sélecteur de fichier pour les annexes
