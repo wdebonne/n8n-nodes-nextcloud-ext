@@ -127,14 +127,14 @@ async function extractPdfFields(buffer: Buffer): Promise<PdfFieldInfo[]> {
 
 export class NextCloudPdf implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Nextcloud PDF',
+		displayName: 'NextCloud PDF',
 		name: 'nextCloudPdf',
 		icon: 'file:nextcloud.svg',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"]}}',
 		description: 'Lit et remplit les champs de formulaire (AcroForm) de PDFs stockés sur Nextcloud',
-		defaults: { name: 'Nextcloud PDF' },
+		defaults: { name: 'NextCloud PDF' },
 		inputs: ['main'],
 		outputs: ['main'],
 		credentials: [{ name: 'nextCloudApi', required: true }],

@@ -6,7 +6,7 @@
 
 Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des nodes Microsoft 365 (OneDrive + Excel + Word) avec en plus la gestion des formulaires PDF.
 
-> Gérez vos fichiers Nextcloud, manipulez vos feuilles de calcul (`.xlsx`, `.ods`, `.csv`) avec les **tables Excel nommées**, générez des documents depuis des templates, et lisez/remplissez vos **formulaires PDF** — directement depuis vos workflows n8n, sans aucune dépendance au cloud Microsoft.
+> Gérez vos fichiers Nextcloud, manipulez vos feuilles de calcul avec les **tables Excel nommées**, générez des documents depuis des templates DOCX/ODT, et lisez/remplissez vos **formulaires PDF AcroForm** — directement depuis vos workflows n8n, sans aucune dépendance au cloud Microsoft.
 
 ---
 
@@ -14,10 +14,10 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 
 | Node | Équivalent Microsoft 365 | Description |
 |---|---|---|
-| **Nextcloud** | OneDrive | Gestion de fichiers et dossiers via WebDAV |
-| **Nextcloud Spreadsheet** | Excel | Lecture/écriture de fichiers tableur + tables nommées |
-| **Nextcloud Doc Template** | Word (Mail Merge) | Remplissage de templates DOCX/ODT via syntaxe Carbone ({d.variable}) |
-| **Nextcloud PDF** | — | Lecture et remplissage des champs de formulaire AcroForm de PDFs |
+| **NextCloud Folder** | OneDrive | Fichiers, dossiers et partages via WebDAV |
+| **NextCloud Spreadsheet** | Excel | Lecture/écriture tableur `.xlsx`/`.ods`/`.csv` + tables nommées |
+| **NextCloud Doc Template** | Word (Mail Merge) | Templates DOCX/ODT avec syntaxe Carbone — variables, boucles, sortie PDF |
+| **NextCloud PDF** | — | Lecture et remplissage des champs de formulaire AcroForm |
 
 ---
 
@@ -62,7 +62,7 @@ npm install n8n-nodes-nextcloud-ext
 
 ---
 
-## Node — Nextcloud
+## Node — NextCloud Folder
 
 Gestion de fichiers, dossiers et partages via l'API WebDAV de Nextcloud.
 
@@ -70,8 +70,8 @@ Gestion de fichiers, dossiers et partages via l'API WebDAV de Nextcloud.
 
 | Opération | Description |
 |---|---|
-| **List** | Liste les fichiers d'un dossier |
-| **Download** | Télécharge un fichier (sortie binaire) |
+| **List** | Liste les fichiers et dossiers d'un chemin |
+| **Download** | Télécharge un fichier (retourne un binaire) |
 | **Upload** | Envoie un fichier binaire vers Nextcloud |
 | **Delete** | Supprime un fichier |
 | **Move** | Déplace ou renomme un fichier |
@@ -82,53 +82,54 @@ Gestion de fichiers, dossiers et partages via l'API WebDAV de Nextcloud.
 | Opération | Description |
 |---|---|
 | **List** | Liste le contenu d'un dossier |
-| **Create** | Crée un dossier |
-| **Delete** | Supprime un dossier et son contenu |
+| **Create** | Crée un dossier (et les parents si nécessaire) |
+| **Delete** | Supprime un dossier et tout son contenu |
 
 ### Resource : Share
 
 | Opération | Description |
 |---|---|
-| **Create** | Crée un lien de partage public ou vers un utilisateur/groupe |
+| **Create** | Crée un lien de partage public, vers un utilisateur ou un groupe. Options : permissions, mot de passe, date d'expiration. |
 | **Delete** | Supprime un partage par son ID |
 | **Get All** | Liste tous vos partages actifs |
 
 ---
 
-## Node — Nextcloud Spreadsheet
+## Node — NextCloud Spreadsheet
 
 Lit et écrit dans des fichiers tableur stockés sur Nextcloud. Supporte `.xlsx`, `.xls`, `.ods` et `.csv`.
 
 > Les écritures utilisent **xlsx-populate** qui modifie uniquement les cellules demandées sans reconstruire le fichier — tableaux Excel nommés, styles, cellules fusionnées et mise en page sont préservés intégralement.
 
----
-
 ### Sélection du fichier
 
+Deux modes disponibles pour tous les sélecteurs de fichiers :
+
 ```
-From    ▼  From List           ← liste dynamique ou chemin direct
-Folder  ▼  📁 Documents        ← filtre la liste par dossier (2 niveaux)
-File    ▼  Arrêtés.xlsx        ← fichiers du dossier sélectionné
+Depuis   ▼  Depuis une liste     ← dropdown avec navigation par dossier
+           Par chemin (expression) ← chemin direct, supporte les expressions n8n
 ```
+
+En mode liste, un premier dropdown sélectionne le **dossier** (2 niveaux d'arborescence), puis un second liste les **fichiers compatibles** dans ce dossier.
 
 ---
 
 ### Resource : Sheet
 
-Travaille sur les données d'une feuille de calcul.
+Travaille sur les données brutes d'une feuille de calcul.
 
-**⚙️ Paramètre clé : `Header Row`** — numéro de la ligne contenant les en-têtes (défaut : 1). Tous les dropdowns de colonnes se rechargent automatiquement quand cette valeur change.
+**Paramètre clé : `Header Row`** — numéro de la ligne contenant les en-têtes (défaut : 1). Tous les dropdowns de colonnes se rechargent automatiquement quand cette valeur change.
 
 | Opération | Description |
 |---|---|
 | **Get Rows** | Retourne toutes les lignes en tant qu'items n8n |
-| **Append Row** | Ajoute une ligne à la fin (hérite des styles de la ligne précédente) |
-| **Update Row** | Modifie une ligne existante par son numéro |
+| **Append Row** | Ajoute une ligne à la fin — hérite automatiquement des styles (police, couleurs, alignement, bordures) de la ligne précédente |
+| **Update Row** | Modifie une ligne existante par son numéro (1 = première ligne de données) |
 | **Delete Row** | Supprime une ligne par son numéro |
 | **Get Columns** | Retourne la liste des en-têtes de colonnes |
 | **Clear** | Supprime toutes les lignes de données en conservant l'en-tête |
 
-**Options pour Get Rows :**
+#### Options pour Get Rows (Sheet)
 
 | Option | Défaut | Description |
 |---|---|---|
@@ -137,10 +138,10 @@ Travaille sur les données d'une feuille de calcul.
 
 **Exemple — fichier avec titre en ligne 1 et en-têtes en ligne 4 :**
 ```
-Header Row   : 4
-Sheet        : Suivi
+Header Row : 4
+Sheet      : Suivi
 
-→ Colonnes chargées : N°, INTITULÉ, DATE, Service
+→ Colonnes chargées depuis la ligne 4 : N°, INTITULÉ, DATE, Service
 → Données lues depuis la ligne 5
 ```
 
@@ -154,39 +155,41 @@ Travaille sur une **table Excel nommée** (créée via *Insertion → Tableau* d
 
 | Opération | Description |
 |---|---|
-| **List** | Liste toutes les tables nommées du classeur |
-| **Get Rows** | Retourne les lignes de la table (filtres et options disponibles) |
-| **Append Row** | Ajoute une ligne et **étend automatiquement la plage de la table** |
+| **List** | Liste toutes les tables nommées du classeur avec leur feuille, plage et nombre de lignes |
+| **Get Rows** | Retourne les lignes de la table avec filtres et options |
+| **Append Row** | Ajoute une ligne et **étend automatiquement la plage de la table** — styles copiés depuis la ligne précédente |
 | **Update Row** | Modifie une ligne par son numéro dans la table |
 | **Delete Row** | Supprime une ligne et **rétracte la plage de la table** |
 | **Get Columns** | Retourne les en-têtes de colonnes de la table |
 
 #### Options pour Get Rows (Table)
 
-| Option / Champ | Description |
+| Option | Description |
 |---|---|
-| **Include Row Number** | Ajoute `__rowNumber` à chaque item (1 = première ligne de données). Utilisez-le dans Update Row ou Delete Row pour cibler la ligne exacte. |
+| **Include Row Number** | Ajoute `__rowNumber` à chaque item (1 = première ligne de données). Utilisez `{{ $json.__rowNumber }}` dans Update Row ou Delete Row pour cibler la ligne exacte. |
 | **Return Last N Rows** | Retourner seulement les N dernières lignes |
 | **Start From Column** | Ignorer les colonnes avant la position N |
-| **Filters** | Filtrer les lignes par valeur de colonne (plusieurs filtres = AND) |
+| **Filters** | Filtrer les lignes par valeur de colonne — plusieurs filtres = logique AND. Les colonnes disponibles sont chargées dynamiquement depuis la définition de la table. |
 
-#### Workflow : trouver et modifier une ligne précise
+> **Important** : `__rowNumber` est assigné **avant** l'application des filtres, ce qui garantit que le numéro reflète toujours la position réelle dans la table.
+
+#### Workflow type — trouver et modifier une ligne précise
 
 ```
 1. Get Rows (Table)
    ├─ Table   : Suivi
-   ├─ Filters : N° = {{ $json.numero }}   ← valeur à chercher
+   ├─ Filters : N° = {{ $json.numero }}
    └─ Options : Include Row Number ✓
 
 2. Update Row (Table)
    ├─ Table      : Suivi
-   ├─ Row Number : {{ $json.__rowNumber }} ← numéro retourné par Get Rows
+   ├─ Row Number : {{ $json.__rowNumber }}
    └─ Column Values:
         Statut → Validé
         DATE   → {{ $now.format('dd/MM/yyyy') }}
 ```
 
-**Résultat de Get Rows avec Include Row Number :**
+**Sortie de Get Rows avec Include Row Number :**
 ```json
 {
   "__rowNumber": 42,
@@ -205,11 +208,11 @@ Table : Suivi  [Suivi · A4:D752 · 748 rows]
 Column Values:
   N°       → 8289
   INTITULÉ → Arrêté de circulation
-  DATE     → 15/05/2025
+  DATE     → 15/05/2026
   Service  → D. MARTIN
 ```
 
-→ La table passe automatiquement de `A4:D752` à `A4:D753`. Les styles (alignement, couleurs) sont copiés depuis la ligne précédente.
+→ La table passe automatiquement de `A4:D752` à `A4:D753`. Les styles sont copiés depuis la ligne précédente.
 
 ---
 
@@ -218,79 +221,43 @@ Column Values:
 | Opération | Description |
 |---|---|
 | **Get Sheets** | Retourne tous les noms de feuilles du classeur |
-| **Get Tables** | Retourne toutes les tables nommées de toutes les feuilles |
+| **Get Tables** | Retourne toutes les tables nommées de toutes les feuilles avec leur feuille, plage et nombre de lignes |
 
 ---
 
-## Structure des chemins
+## Node — NextCloud Doc Template
 
-Tous les chemins sont **relatifs à la racine de votre espace Nextcloud** :
-
-```
-/                              → racine
-/Documents/rapport.xlsx        → fichier dans Documents
-/Tableaux/Arrêtés/suivi.xlsx  → sous-dossier
-```
-
----
-
-## Développement local
-
-```bash
-git clone https://github.com/wdebonne/n8n-nodes-nextcloud-ext.git
-cd n8n-nodes-nextcloud-ext
-
-# Installer les dépendances (Windows avec proxy SSL)
-NODE_OPTIONS=--use-system-ca npm install
-
-# Compiler TypeScript → dist/
-npm run build
-
-# Mode watch
-npm run dev
-```
-
-### Tester dans n8n en local
-
-```bash
-npm run build && npm link
-
-# Dans le répertoire de données n8n :
-npm link n8n-nodes-nextcloud-ext
-# Redémarrer n8n
-```
-
----
-
----
-
-## Node — Nextcloud Doc Template
-
-Génère des documents Word/ODT à partir de templates stockés sur Nextcloud, en utilisant la syntaxe **Carbone** — identique à `n8n-nodes-carbonejs` mais avec votre instance Nextcloud.
+Génère des documents Word/ODT à partir de **templates** stockés sur Nextcloud, en utilisant le moteur **Carbone** — syntaxe identique à `n8n-nodes-carbonejs` mais avec votre instance Nextcloud comme stockage.
 
 > Supporte les variables simples ET les **boucles sur tableaux** pour générer plusieurs pages/sections dynamiquement, sans multiplier les templates.
 
+### Sélection du template
+
+Même système de sélection que le Spreadsheet :
+- **From List** : dropdown dossier + dropdown fichiers `.docx`/`.odt`
+- **By Path (Expression)** : chemin direct avec expressions n8n
+
 ### Syntaxe Carbone dans les templates
 
-| Placeholder dans le document | Description |
+| Placeholder | Description |
 |---|---|
 | `{d.nom}` | Valeur simple |
-| `{d.date:formatD('DD/MM/YYYY')}` | Valeur avec formateur de date |
+| `{d.date:formatD('DD/MM/YYYY')}` | Formateur de date |
 | `{d.montant:toFixed(2)}` | Valeur numérique formatée |
-| `{d.lignes[i].designation}` | Répétition d'un tableau ou d'une section pour chaque item |
-| `{d.lignes[i+1].designation}` | Fin de la boucle (marque la dernière colonne) |
-| `{d.actif ? 'Oui' : 'Non'}` | Condition |
+| `{d.actif ? 'Oui' : 'Non'}` | Condition ternaire |
+| `{d.lignes[i].designation}` | Début d'une boucle — répète la ligne/section pour chaque item |
+| `{d.lignes[i+1].designation}` | Fin de la boucle |
 
-### Operations
+### Opérations
 
 | Opération | Description |
 |---|---|
-| **Fill Template** | Télécharge le template Nextcloud, injecte les données, sauvegarde le résultat |
-| **Get Variables** | Scanne le template et retourne tous les `{d.xxx}` trouvés |
+| **Fill Template** | Télécharge le template, injecte les données, sauvegarde ou retourne en binaire |
+| **Get Variables** | Scanne le template et retourne tous les placeholders `{d.xxx}` trouvés |
 
 ### Modes de données (Fill Template)
 
-**Key-Value Pairs** — pour les documents simples :
+**Key-Value Pairs** — saisie variable par variable, avec dropdown auto-chargé depuis les placeholders du template :
 ```
 Template Variables:
   nom       → {{ $json.nom_client }}
@@ -308,64 +275,60 @@ Template Variables:
   ]
 }
 ```
-→ Dans le template, un tableau avec `{d.lignes[i].designation}` se répète automatiquement pour chaque ligne.
+→ Dans le template Word, un tableau avec `{d.lignes[i].designation}` se répète automatiquement pour chaque ligne. Pour des **pages entières** répétées, utilisez une section avec saut de page et `{d.pages[i].xxx}`.
 
-### Modes de sortie
+### Format de sortie
 
-| Mode | Description |
+| Format | Description |
 |---|---|
-| **Save to Nextcloud** | Sauvegarde le document rempli sur Nextcloud (chemin à spécifier) |
-| **Return as Binary** | Retourne le document en binaire (pour envoi par email, téléchargement, etc.) |
+| **DOCX** | Document Word — aucune dépendance externe |
+| **PDF** | Nécessite **LibreOffice** installé sur le serveur n8n |
 
-### Workflow typique — génération de contrat
+### Mode de sortie
+
+**Save to Nextcloud** — deux sous-modes :
+- **Choisir un dossier + nom de fichier** : dropdown dossier arborescent + champ nom de fichier (supporte les expressions)
+- **Par chemin complet (expression)** : chemin libre, ex : `/Contrats/contrat_{{ $json.client }}.docx`
+
+**Return as Binary** : retourne le document en binaire pour envoi email, téléchargement, etc.
+
+### Workflow type — génération de contrat
 
 ```
-1. Form Trigger (ou HTTP Request)
-   └─ Données du formulaire : nom_client, adresse, montant
+1. Form Trigger (ou Webhook)
+   └─ Données : nom_client, adresse, montant
 
-2. Nextcloud Doc Template
+2. NextCloud Doc Template  [Fill Template]
    ├─ Template : /Templates/contrat.docx
-   ├─ Data Mode : Key-Value Pairs
+   ├─ Mode     : Key-Value Pairs
    │   nom_client → {{ $json.nom_client }}
-   │   adresse    → {{ $json.adresse }}
    │   montant    → {{ $json.montant }}
-   └─ Output : Save to Nextcloud → /Contrats/contrat_{{ $json.nom_client }}.docx
+   ├─ Format   : DOCX
+   └─ Sortie   : Dossier /Contrats + Nom : contrat_{{ $json.nom_client }}.docx
 
 3. (Optionnel) Send Email
-   └─ Attachment : binary "data" du node précédent (mode Return as Binary)
+   └─ Pièce jointe : binaire "data" du node précédent (mode Return as Binary)
 ```
-
-### Pages dynamiques — exemple facture
-
-Template Word avec un tableau :
-
-| Désignation | Qté | Prix |
-|---|---|---|
-| `{d.lignes[i].designation}` | `{d.lignes[i].qte}` | `{d.lignes[i].prix}` |
-| `{d.lignes[i+1].designation}` | | |
-
-Données JSON passées au node :
-```json
-{
-  "numero": "FAC-2025-001",
-  "client": "ACME",
-  "lignes": [
-    { "designation": "Développement", "qte": 5, "prix": 800 },
-    { "designation": "Formation", "qte": 2, "prix": 400 }
-  ]
-}
-```
-→ Carbone répète les lignes du tableau automatiquement. Pour répéter des **pages entières**, créez une section avec saut de page dans le template et utilisez `{d.pages[i].xxx}`.
 
 ---
 
-## Node — Nextcloud PDF
+## Node — NextCloud PDF
 
-Lecture et remplissage des champs de formulaire **AcroForm** de PDFs stockés sur Nextcloud (bibliothèque `pdf-lib`).
+Lecture et remplissage des champs de formulaire **AcroForm** de PDFs stockés sur Nextcloud.
+
+> Supporte tous les types de champs AcroForm : texte, case à cocher, bouton radio, liste déroulante, liste à sélection multiple, signature.
+
+### Sélection du fichier PDF
+
+Même système que les autres nodes :
+- **Depuis une liste** : dropdown dossier + dropdown fichiers `.pdf`
+- **Par chemin (expression)** : chemin direct avec expressions n8n
+
+---
 
 ### Opération : Get Fields
 
-Extrait tous les champs du formulaire PDF et les retourne en JSON.
+Extrait tous les champs du formulaire PDF et les retourne en JSON structuré.
 
 **Sortie JSON :**
 ```json
@@ -374,63 +337,149 @@ Extrait tous les champs du formulaire PDF et les retourne en JSON.
   "count": 5,
   "values": {
     "Nom": "Dupont",
-    "Prénom": "Jean",
     "Etudiant": true,
     "Couleur": "Bleu",
-    "Pays": "France"
+    "Pays": "France",
+    "Competences": ["TypeScript", "Python"]
   },
   "fields": [
-    { "name": "Nom", "type": "text", "value": "Dupont", "required": false, "readOnly": false },
-    { "name": "Etudiant", "type": "checkbox", "value": true, "required": false, "readOnly": false },
-    { "name": "Couleur", "type": "radio", "value": "Bleu", "options": ["Rouge", "Vert", "Bleu"], "required": false, "readOnly": false },
-    { "name": "Pays", "type": "dropdown", "value": "France", "options": ["France", "Belgique", "Suisse"], "required": false, "readOnly": false },
-    { "name": "Compétences", "type": "optionList", "value": ["TypeScript", "Python"], "options": ["TypeScript", "Python", "Go"], "required": false, "readOnly": false }
+    { "name": "Nom",         "type": "text",       "value": "Dupont",                        "required": false, "readOnly": false },
+    { "name": "Etudiant",    "type": "checkbox",   "value": true,                            "required": false, "readOnly": false },
+    { "name": "Couleur",     "type": "radio",      "value": "Bleu",    "options": ["Rouge", "Vert", "Bleu"],            "required": false, "readOnly": false },
+    { "name": "Pays",        "type": "dropdown",   "value": "France",  "options": ["France", "Belgique", "Suisse"],     "required": false, "readOnly": false },
+    { "name": "Competences", "type": "optionList", "value": ["TypeScript", "Python"], "options": ["TypeScript", "Python", "Go"], "required": false, "readOnly": false }
   ]
 }
 ```
 
-- `values` : accès direct par nom de champ — `{{ $json.values.Nom }}`
-- `fields` : détail complet avec type et options disponibles
-- Types supportés : `text`, `checkbox`, `radio`, `dropdown`, `optionList`, `signature`, `button`
+| Propriété | Description |
+|---|---|
+| `values` | Objet plat `{ nomChamp: valeur }` — accès direct par expression : `{{ $json.values.Nom }}` |
+| `fields` | Tableau complet avec `type`, `value`, `options` disponibles, `required`, `readOnly` |
+
+**Types de champs supportés :**
+
+| Type | Description |
+|---|---|
+| `text` | Champ texte simple ou multiligne |
+| `checkbox` | Case à cocher — valeur `true`/`false` |
+| `radio` | Groupe de boutons radio — valeur = option sélectionnée, `options` = liste des choix |
+| `dropdown` | Liste déroulante — même structure que radio |
+| `optionList` | Liste à sélection multiple — valeur = tableau des options sélectionnées |
+| `signature` | Champ signature — valeur `null` (lecture seule) |
+| `button` | Bouton push — valeur `null` (lecture seule) |
+
+---
 
 ### Opération : Fill Fields
 
 Remplit les champs du formulaire PDF puis sauvegarde sur Nextcloud ou retourne en binaire.
 
-| Paramètre | Description |
-|---|---|
-| **Mode de saisie** | *Paires Clé-Valeur* (champ par champ) ou *Objet JSON* (depuis webhook, formulaire…) |
-| **Aplatir le formulaire** | Rend les champs non modifiables après remplissage |
-| **Mode de sortie** | *Sauvegarder sur Nextcloud* ou *Retourner en binaire* |
+### Modes de données
 
-**Valeurs acceptées pour les cases à cocher :**
+**Paires Clé-Valeur** — saisie champ par champ :
+- Le dropdown **Nom du champ** charge automatiquement tous les champs du PDF sélectionné avec leur type et options
+- Le champ **Valeur** supporte les expressions n8n : `{{ $json.body.nom }}`
 
-| Coché | Non coché |
+**Objet JSON** — idéal pour les webhooks et formulaires en ligne :
+```
+Données (JSON) = {{ $json.body }}
+```
+→ Le node mappe directement chaque clé JSON sur le champ PDF du même nom.
+
+#### Valeurs acceptées pour les cases à cocher (checkbox)
+
+| Coché ✓ | Non coché ☐ |
 |---|---|
 | `true`, `True`, `TRUE` | `false`, `False`, `FALSE` |
 | `Oui`, `oui`, `OUI` | `Non`, `non`, `NON` |
 | `Yes`, `yes`, `YES` | `No`, `no`, `NO` |
-| `1`, `Vrai`, `vrai` | `0`, `Faux`, `faux` |
+| `Vrai`, `vrai` | `Faux`, `faux` |
+| `1`, `on`, `checked` | `0` |
 
-**Exemple — workflow avec Webhook → PDF Fill :**
+#### Option : Aplatir le formulaire
+
+Si activé, les champs sont aplatis dans le document après remplissage — les valeurs deviennent du texte imprimé non modifiable.
+
+### Mode de sortie
+
+**Sauvegarder sur Nextcloud** — deux sous-modes :
+- **Choisir un dossier + nom de fichier** : dropdown dossier + champ nom (supporte les expressions)
+- **Par chemin complet (expression)** : chemin libre
+
+**Retourner en binaire** : retourne le PDF rempli pour téléchargement, envoi email, etc.
+
+### Workflow type — webhook → PDF rempli
 
 ```
-Webhook (formulaire en ligne)
-  → Nextcloud PDF [Fill Fields, mode JSON]
-      jsonData = {{ $json.body }}
-      outputPath = /Inscriptions/{{ $json.body.Nom }}_inscription.pdf
+1. Webhook
+   └─ body: { "Nom": "Dupont", "Etudiant": "Oui", "Couleur": "Rouge" }
+
+2. NextCloud PDF  [Fill Fields]
+   ├─ Fichier PDF  : /Templates/inscription.pdf
+   ├─ Mode         : Objet JSON → ={{ $json.body }}
+   ├─ Aplatir      : Non
+   └─ Sortie       : Dossier /Inscriptions + Nom : {{ $json.body.Nom }}_inscription.pdf
 ```
 
-Si le webhook reçoit `{ "Nom": "Dupont", "Etudiant": "Oui", "Couleur": "Rouge" }`, le PDF est automatiquement rempli et sauvegardé sur Nextcloud.
+### Workflow type — webhook complexe avec Code node
+
+Quand les clés du webhook ne correspondent pas exactement aux noms de champs PDF, ou quand des valeurs doivent être calculées :
+
+```
+1. Webhook
+
+2. Code node
+   └─ Calcule les champs dérivés (date de demande, combinaisons de champs, etc.)
+      et recopie tout le body :
+      return { json: { ...b, "Date de la demande": dateFormatée, ... } }
+
+3. NextCloud PDF  [Fill Fields]
+   └─ Mode : Objet JSON → ={{ $json }}
+```
+
+---
+
+## Structure des chemins Nextcloud
+
+Tous les chemins sont **relatifs à la racine de votre espace Nextcloud** :
+
+```
+/                              → racine
+/Documents/rapport.xlsx        → fichier dans Documents
+/Templates/formulaire.pdf      → fichier dans Templates
+/Sorties/2026/                 → sous-dossier
+```
+
+---
+
+## Développement local
+
+```bash
+git clone https://github.com/wdebonne/n8n-nodes-nextcloud-ext.git
+cd n8n-nodes-nextcloud-ext
+npm install
+npm run build   # compile TypeScript → dist/
+npm run dev     # mode watch
+```
+
+### Tester dans n8n en local
+
+```bash
+npm run build && npm link
+# Dans le répertoire de données n8n :
+npm link n8n-nodes-nextcloud-ext
+# Redémarrer n8n
+```
 
 ---
 
 ## Roadmap
 
 - [ ] Support OAuth2 Nextcloud (PKCE)
-- [ ] Node **Nextcloud Talk** (messages, salons)
-- [ ] Node **Nextcloud Contacts** (CardDAV)
-- [ ] Node **Nextcloud Calendar** (CalDAV)
+- [ ] Node **NextCloud Talk** (messages, salons)
+- [ ] Node **NextCloud Contacts** (CardDAV)
+- [ ] Node **NextCloud Calendar** (CalDAV)
 
 ---
 
@@ -445,5 +494,4 @@ Si le webhook reçoit `{ "Nom": "Dupont", "Etudiant": "Oui", "Couleur": "Rouge" 
 - [npmjs.com/package/n8n-nodes-nextcloud-ext](https://www.npmjs.com/package/n8n-nodes-nextcloud-ext)
 - [GitHub](https://github.com/wdebonne/n8n-nodes-nextcloud-ext)
 - [Changelog](CHANGELOG.md)
-- [Guide de déploiement](DEPLOY.md)
 - [Documentation n8n — Community Nodes](https://docs.n8n.io/integrations/community-nodes/)

@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.36] — 2026-05-15
+
+### Modifié — Renommage des nodes (displayName uniquement, aucun impact sur les workflows existants)
+
+- `Nextcloud` → **`NextCloud Folder`**
+- `Nextcloud Spreadsheet` → **`NextCloud Spreadsheet`**
+- `Nextcloud Doc Template` → **`NextCloud Doc Template`**
+- `Nextcloud PDF` → **`NextCloud PDF`**
+
+### Modifié — README
+
+- Refonte complète : documentation exhaustive de toutes les opérations, options et workflows pour les 4 nodes.
+- Ajout des sections manquantes : sélection de fichier (From List / By Path), options Get Rows (Sheet et Table), format de sortie Doc Template (DOCX/PDF), mode de sortie PDF (dossier browser / chemin complet), table des types de champs AcroForm, valeurs acceptées pour les cases à cocher.
+
+---
+
 ## [1.0.35] — 2026-05-15
 
 ### Modifié — Nextcloud PDF

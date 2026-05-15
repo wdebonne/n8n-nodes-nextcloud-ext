@@ -24,14 +24,14 @@ import {
 
 export class NextCloudDocTemplate implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Nextcloud Doc Template',
+		displayName: 'NextCloud Doc Template',
 		name: 'nextCloudDocTemplate',
 		icon: 'file:nextcloud.svg',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"]}}',
 		description: 'Fill DOCX/ODT templates stored on Nextcloud using Carbone syntax — {d.variable}, {d.array[i].field} for dynamic pages',
-		defaults: { name: 'Nextcloud Doc Template' },
+		defaults: { name: 'NextCloud Doc Template' },
 		inputs: ['main'],
 		outputs: ['main'],
 		credentials: [{ name: 'nextCloudApi', required: true }],

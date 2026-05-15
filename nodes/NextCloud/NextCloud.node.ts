@@ -24,15 +24,15 @@ function makeAuthHeader(user: string, password: string): string {
 
 export class NextCloud implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Nextcloud',
+		displayName: 'NextCloud Folder',
 		name: 'nextCloud',
 		icon: 'file:nextcloud.svg',
 		group: ['input'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
-		description: 'Manage files and folders on Nextcloud (WebDAV)',
+		description: 'Manage files, folders and shares on Nextcloud (WebDAV)',
 		defaults: {
-			name: 'Nextcloud',
+			name: 'NextCloud Folder',
 		},
 		inputs: ['main'],
 		outputs: ['main'],

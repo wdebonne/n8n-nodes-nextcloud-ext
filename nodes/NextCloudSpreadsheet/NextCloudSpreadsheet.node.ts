@@ -40,14 +40,14 @@ import {
 
 export class NextCloudSpreadsheet implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Nextcloud Spreadsheet',
+		displayName: 'NextCloud Spreadsheet',
 		name: 'nextCloudSpreadsheet',
 		icon: 'file:nextcloud.svg',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + " · " + $parameter["resource"]}}',
 		description: 'Read and write spreadsheet files (.xlsx, .ods, .csv) stored on Nextcloud — includes named Excel table support',
-		defaults: { name: 'Nextcloud Spreadsheet' },
+		defaults: { name: 'NextCloud Spreadsheet' },
 		inputs: ['main'],
 		outputs: ['main'],
 		credentials: [{ name: 'nextCloudApi', required: true }],
