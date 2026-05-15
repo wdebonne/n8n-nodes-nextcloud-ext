@@ -39,3 +39,4 @@ jest.config.*
 
 # Guides de développement (non nécessaires dans le package installé)
 DEPLOY.md
+CHANGELOG.md

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![n8n community node](https://img.shields.io/badge/n8n-community%20node-orange)](https://docs.n8n.io/integrations/community-nodes/)
 
-Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des nodes Microsoft 365 (OneDrive + Excel) intégrés à n8n.
+Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des nodes Microsoft 365 (OneDrive + Excel).
 
 > Gérez vos fichiers Nextcloud et manipulez vos feuilles de calcul (`.xlsx`, `.ods`, `.csv`) — y compris les **tables Excel nommées** — directement depuis vos workflows n8n, sans aucune dépendance au cloud Microsoft.
 
@@ -57,7 +57,7 @@ Puis redémarrez n8n.
 | **Username** | Votre identifiant Nextcloud | `admin` |
 | **Password / App Password** | Mot de passe ou mot de passe d'application | `xxxx-xxxx-xxxx-xxxx` |
 
-> **Recommandé** : créez un **mot de passe d'application** dans Nextcloud → *Paramètres → Sécurité → Mots de passe d'application* pour ne pas exposer votre mot de passe principal.
+> **Recommandé** : créez un **mot de passe d'application** dans Nextcloud → *Paramètres → Sécurité → Mots de passe d'application*.
 
 ---
 
@@ -76,14 +76,6 @@ Gestion de fichiers, dossiers et partages via l'API WebDAV de Nextcloud.
 | **Move** | Déplace ou renomme un fichier |
 | **Copy** | Copie un fichier vers un autre chemin |
 
-**Exemple — Upload** (après un node qui produit des données binaires)
-```
-File Path       : /Rapports/rapport-{{ $now.format('yyyy-MM') }}.xlsx
-Binary Property : data
-```
-
----
-
 ### Resource : Folder
 
 | Opération | Description |
@@ -91,8 +83,6 @@ Binary Property : data
 | **List** | Liste le contenu d'un dossier |
 | **Create** | Crée un dossier |
 | **Delete** | Supprime un dossier et son contenu |
-
----
 
 ### Resource : Share
 
@@ -102,100 +92,72 @@ Binary Property : data
 | **Delete** | Supprime un partage par son ID |
 | **Get All** | Liste tous vos partages actifs |
 
-**Exemple — Créer un lien public protégé par mot de passe**
-```
-Path        : /Documents/rapport-annuel.pdf
-Share Type  : Public Link
-Permissions : Read Only (1)
-Password    : MonMotDePasse
-Expiry Date : 2025-12-31
-```
-
 ---
 
 ## Node — Nextcloud Spreadsheet
 
 Lit et écrit dans des fichiers tableur stockés sur Nextcloud. Supporte `.xlsx`, `.xls`, `.ods` et `.csv`.
 
-**Principe** : le node télécharge le fichier depuis Nextcloud via WebDAV, applique l'opération en mémoire ([SheetJS](https://sheetjs.com/) + [JSZip](https://stuk.github.io/jszip/) pour les tables nommées), puis ré-uploade le fichier modifié.
+**Architecture technique :**
+- **Lecture** → ExcelJS (fiable, gère toutes les structures)
+- **Écriture Sheet** → xlsx-populate (modifie uniquement les cellules demandées, préserve tout le reste)
+- **Écriture Table** → ExcelJS + JSZip (modification des cellules + mise à jour du ref XML de la table)
+- **Détection tables** → JSZip + parsing XML direct du fichier xlsx
 
 ---
 
 ### Sélection du fichier
 
-La sélection d'un fichier se fait en 3 champs enchaînés :
-
 ```
 From    ▼  From List           ← mode : liste ou chemin direct
-Folder  ▼  📁 Documents        ← filtre la liste au dossier choisi
-              └ Finance
-           📁 Tableaux
-           / (root)
-File    ▼  Arrêtés.xlsx        ← fichiers du dossier sélectionné
-           Suivi.xlsx
+Folder  ▼  📁 Documents        ← filtre la liste de fichiers
+File    ▼  Arrêtés.xlsx        ← fichiers dans le dossier choisi
 ```
 
 | Champ | Description |
 |---|---|
 | **From** | `From List` (menu déroulant) ou `By Path` (expression n8n) |
-| **Folder** | Sélectionne le dossier (racine + 2 niveaux) — recharge la liste de fichiers |
+| **Folder** | Sélectionne le dossier (racine + 2 niveaux) — recharge automatiquement la liste |
 | **File** | Fichiers tableur disponibles dans le dossier choisi |
-
-Pour la feuille et la table, deux modes sont aussi disponibles : **From List** ou **By Name (Expression)**.
 
 ---
 
 ### Resource : Sheet
 
-Travaille sur les données d'une feuille de calcul. La **première ligne est traitée comme les en-têtes de colonnes**.
+Travaille sur les données d'une feuille de calcul.
+
+**⚙️ Paramètre clé : `Header Row`** — numéro de la ligne contenant les en-têtes de colonnes (défaut : 1). Changez-le si vos colonnes ne sont pas sur la première ligne. Tous les dropdowns de colonnes se rechargent automatiquement.
 
 | Opération | Description |
 |---|---|
 | **Get Rows** | Retourne toutes les lignes en tant qu'items n8n |
 | **Append Row** | Ajoute une nouvelle ligne à la fin de la feuille |
-| **Update Row** | Modifie une ligne existante par son numéro (1 = première ligne de données) |
+| **Update Row** | Modifie une ligne existante par son numéro (1 = première ligne après l'en-tête) |
 | **Delete Row** | Supprime une ligne par son numéro |
 | **Get Columns** | Retourne la liste des en-têtes de colonnes |
 | **Clear** | Supprime toutes les lignes de données en conservant l'en-tête |
 
+#### Options pour Get Rows
+
+| Option | Défaut | Description |
+|---|---|---|
+| **Return Last N Rows** | 0 (= toutes) | `1` = dernière ligne seulement, `2` = 2 dernières, etc. |
+| **Start From Column** | 1 | Ignore les colonnes avant la position N |
+
 #### Sélection des colonnes (Get Rows)
 
-Le champ **Column Names or IDs** est un sélecteur multiple :
-- Laissez vide → toutes les colonnes sont retournées
-- Sélectionnez une ou plusieurs colonnes → seules celles-ci apparaissent dans le résultat
-- Les colonnes disponibles sont chargées dynamiquement depuis votre fichier
+Le champ **Column Names or IDs** est un sélecteur multiple chargé dynamiquement. Vide = toutes les colonnes.
 
+**Exemple — Append Row avec Header Row = 4**
 ```
-Column Names or IDs :  N°  ×   INTITULÉ  ×
-                       ↓
-                       N°          ✓
-                       INTITULÉ    ✓
-                       DATE
-                       Service
-```
-
-**Exemple — Get Rows (colonnes filtrées)**
-```
-From    : From List
-Folder  : 📁 Tableaux
-File    : Arrêtés.xlsx
-Sheet   : Suivi
-Columns : N°  ×  INTITULÉ  ×
-```
-Retourne uniquement N° et INTITULÉ pour chaque ligne :
-```json
-{ "N°": "2024-001", "INTITULÉ": "Arrêté de voirie" }
-```
-
-**Exemple — Append Row**
-```
-File   : Arrêtés.xlsx  /  Sheet : Suivi
+Header Row : 4              ← ligne avec N°, INTITULÉ, DATE, Service
+Sheet      : Suivi
 
 Column Values:
-  N°          → {{ $json.numero }}
-  INTITULÉ    → {{ $json.objet }}
-  DATE        → {{ $now.format('dd/MM/yyyy') }}
-  Service     → {{ $json.service }}
+  N°       → {{ $json.numero }}
+  INTITULÉ → {{ $json.objet }}
+  DATE     → {{ $now.format('dd/MM/yyyy') }}
+  Service  → Travaux
 ```
 
 ---
@@ -204,56 +166,34 @@ Column Values:
 
 Travaille sur une **table Excel nommée** (créée via *Insertion → Tableau* dans Excel, ou `Ctrl+T`).
 
-Les tables nommées sont lues directement depuis le XML interne du fichier `.xlsx` (via JSZip), ce qui garantit une **compatibilité totale** avec Excel, même pour des fichiers créés ou modifiés en dehors de n8n.
-
-Contrairement à la resource Sheet, les opérations Table maintiennent automatiquement la **plage de la table** : Append étend le `ref`, Delete le rétracte — les styles et filtres automatiques Excel sont préservés.
+Les tables sont détectées directement depuis le XML interne du fichier `.xlsx`. Les opérations d'écriture preservent intégralement la structure de la table (plage, styles, filtres automatiques).
 
 | Opération | Description |
 |---|---|
-| **List** | Liste toutes les tables nommées du classeur (nom, feuille, plage, colonnes, nb de lignes) |
+| **List** | Liste toutes les tables nommées du classeur |
 | **Get Rows** | Retourne les lignes de la table (avec sélection de colonnes) |
-| **Append Row** | Ajoute une ligne à la fin **et étend la plage de la table** |
-| **Update Row** | Modifie une ligne par son numéro (1 = première ligne de données) |
+| **Append Row** | Ajoute une ligne et **étend automatiquement la plage de la table** |
+| **Update Row** | Modifie une ligne par son numéro |
 | **Delete Row** | Supprime une ligne et **rétracte la plage de la table** |
 | **Get Columns** | Retourne les en-têtes de colonnes de la table |
 
-**Exemple — List** (retourne une ligne par table)
-```json
-{
-  "name": "Tableau1",
-  "displayName": "Tableau1",
-  "sheetName": "Suivi",
-  "ref": "A1:E42",
-  "columns": ["N°", "INTITULÉ", "DATE", "Responsable", "Service"],
-  "dataRowCount": 41
-}
+**Exemple — Append Row sur une table**
 ```
-
-**Exemple — Get Rows (colonnes filtrées)**
-```
-File    : Arrêtés.xlsx
-Table   : Tableau1  [Suivi · A1:E42 · 41 rows]
-Columns : N°  ×  INTITULÉ  ×
-```
-
-**Exemple — Append Row**
-```
-File  : Arrêtés.xlsx  /  Table : Tableau1
+File  : Arrêtés.xlsx
+Table : Tableau1  [Suivi · A4:E42 · 38 rows]
 
 Column Values:
-  N°          → {{ $json.numero }}
+  N°          → 2025-039
   INTITULÉ    → Arrêté de voirie
-  DATE        → {{ $now.format('dd/MM/yyyy') }}
-  Responsable → {{ $json.agent }}
+  DATE        → 15/05/2025
+  Responsable → Martin
   Service     → Travaux
 ```
-→ La table passe automatiquement de `A1:E42` à `A1:E43`.
+→ La table passe automatiquement de `A4:E42` à `A4:E43`.
 
 ---
 
 ### Resource : Workbook
-
-Inspecte la structure du classeur sans lire les données.
 
 | Opération | Description |
 |---|---|
@@ -270,7 +210,6 @@ Tous les chemins sont **relatifs à la racine de votre espace Nextcloud** :
 /                              → racine
 /Documents/                    → dossier Documents
 /Documents/rapport.xlsx        → fichier dans Documents
-/Tableaux/Arrêtés/suivi.xlsx  → sous-dossier imbriqué
 ```
 
 ---
@@ -287,9 +226,6 @@ NODE_OPTIONS=--use-system-ca npm install
 # Compiler TypeScript → dist/
 npm run build
 
-# Vérification des types seule
-npx tsc --noEmit
-
 # Mode watch (recompile à chaque sauvegarde)
 npm run dev
 ```
@@ -297,8 +233,7 @@ npm run dev
 ### Tester dans n8n en local
 
 ```bash
-npm run build
-npm link
+npm run build && npm link
 
 # Dans le répertoire de données n8n :
 npm link n8n-nodes-nextcloud-ext
@@ -310,10 +245,10 @@ npm link n8n-nodes-nextcloud-ext
 ## Roadmap
 
 - [ ] Support OAuth2 Nextcloud (PKCE)
+- [ ] Filtrage de lignes par valeur (column = value)
 - [ ] Node **Nextcloud Talk** (messages, salons)
 - [ ] Node **Nextcloud Contacts** (CardDAV)
 - [ ] Node **Nextcloud Calendar** (CalDAV)
-- [ ] Filtrage de lignes par valeur (column = value)
 - [ ] Navigation de dossiers en cascade (3+ niveaux)
 
 ---
@@ -328,6 +263,5 @@ npm link n8n-nodes-nextcloud-ext
 
 - [Documentation n8n — Community Nodes](https://docs.n8n.io/integrations/community-nodes/)
 - [Documentation WebDAV Nextcloud](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/WebDAV/basic.html)
-- [API OCS Partage Nextcloud](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/OCS/ocs-share-api.html)
-- [SheetJS (xlsx)](https://sheetjs.com/)
 - [Guide de déploiement npm](DEPLOY.md)
+- [Changelog](CHANGELOG.md)
