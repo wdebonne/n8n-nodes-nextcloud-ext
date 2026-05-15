@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-nextcloud-ext",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "description": "n8n community nodes for Nextcloud — file management (list, upload, download, share) and spreadsheet operations equivalent to the Microsoft 365 Excel node, including named Excel table support",
   "keywords": [
     "n8n-community-node-package",

@@ -26,8 +26,34 @@ interface XlsxPopulateSheet {
 interface XlsxPopulateCell {
 	value(): unknown;
 	value(v: unknown): XlsxPopulateCell;
+	style(names: string[]): Record<string, unknown>;
+	style(stylesObj: Record<string, unknown>): XlsxPopulateCell;
 	rowNumber(): number;
 	columnNumber(): number;
+}
+
+// Style properties to copy when appending a new row
+const STYLE_PROPS = [
+	'horizontalAlignment', 'verticalAlignment', 'wrapText', 'shrinkToFit', 'textRotation',
+	'bold', 'italic', 'underline', 'strikethrough',
+	'fontSize', 'fontFamily', 'fontColor',
+	'fill', 'leftBorder', 'rightBorder', 'topBorder', 'bottomBorder', 'diagonalBorder',
+	'numberFormat',
+];
+
+function copyRowStyle(
+	sheet: XlsxPopulateSheet,
+	fromRow: number,
+	toRow: number,
+	colStart: number,
+	colEnd: number,
+): void {
+	for (let c = colStart; c <= colEnd; c++) {
+		try {
+			const styles = sheet.cell(fromRow, c).style(STYLE_PROPS);
+			sheet.cell(toRow, c).style(styles);
+		} catch { /* skip if cell has no style */ }
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +580,8 @@ export async function appendRowToTable(
 	const newRowNum = er + 1;
 
 	return writeTableWithPopulate(buffer, t.sheetName, t.zipPath, extendTableRef(t.ref, newRowNum), sheet => {
+		// Copy styles from last data row so the new row matches existing formatting
+		copyRowStyle(sheet, er, newRowNum, 1, t.columns.length);
 		t.columns.forEach((col, i) => {
 			if (rowData[col] !== undefined) sheet.cell(newRowNum, i + 1).value(rowData[col]);
 		});
@@ -654,6 +682,9 @@ export async function appendRowXml(
 	const headerRowNum = globalHeaderIdx + 1; // 1-based
 	const headers = xlsxHeaders(sheet, headerRowNum, colStart, colEnd);
 	const newRowNum = xlsxLastRow(sheet, headerRowNum) + 1;
+
+	// Copy styles from the row above so the new row matches the existing formatting
+	copyRowStyle(sheet, newRowNum - 1, newRowNum, colStart + 1, colEnd + 1);
 
 	headers.forEach((h, i) => {
 		if (rowData[h] !== undefined) sheet.cell(newRowNum, colStart + 1 + i).value(rowData[h]);
