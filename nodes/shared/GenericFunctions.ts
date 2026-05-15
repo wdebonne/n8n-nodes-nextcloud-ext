@@ -593,24 +593,14 @@ export async function deleteRowFromTable(
 }
 
 // ---------------------------------------------------------------------------
-// Sheet write operations (ExcelJS — preserves all Excel structure)
+// Sheet write operations — ExcelJS only, no internal table manipulation
+// ExcelJS preserves table XML natively; we never touch worksheet._tables
 // ---------------------------------------------------------------------------
-
-// Update ALL table refs that cover the given sheet to extend by delta rows
-function updateSheetTableRefs(sheet: ExcelJS.Worksheet, afterRow: number, delta: number): void {
-	const tables = (sheet as unknown as { tables: Record<string, { ref: string }> }).tables ?? {};
-	for (const [, table] of Object.entries(tables)) {
-		const er = tableEndRow(table.ref);
-		if (er >= afterRow) {
-			table.ref = extendTableRef(table.ref, er + delta);
-		}
-	}
-}
 
 export async function appendRowXml(
 	originalBuffer: Buffer,
 	sheetName: string,
-	globalHeaderIdx: number,  // 0-based
+	globalHeaderIdx: number,
 	colStart: number,
 	colEnd: number,
 	rowData: IDataObject,
@@ -620,7 +610,6 @@ export async function appendRowXml(
 	const sheet = wb.getWorksheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	// Read headers from configured header row
 	const headerRow = globalHeaderIdx + 1; // 1-based
 	const headers: string[] = [];
 	for (let c = colStart + 1; c <= colEnd + 1; c++) {
@@ -628,22 +617,12 @@ export async function appendRowXml(
 		headers.push(val ? String(val) : '');
 	}
 
-	// Find the last data row (start from last row of sheet or after last table row)
-	let lastRow = sheet.lastRow?.number ?? headerRow;
-	for (const [, table] of Object.entries((sheet as unknown as { tables: Record<string, { ref: string }> }).tables ?? {})) {
-		lastRow = Math.max(lastRow, tableEndRow(table.ref));
-	}
-	const newRowNum = lastRow + 1;
-
+	const newRowNum = (sheet.lastRow?.number ?? headerRow) + 1;
 	const newRow = sheet.getRow(newRowNum);
 	headers.forEach((h, i) => {
 		if (rowData[h] !== undefined) newRow.getCell(colStart + 1 + i).value = rowData[h] as ExcelJS.CellValue;
 	});
 	newRow.commit();
-
-	// Extend all table refs that end at or after the header row
-	updateSheetTableRefs(sheet, headerRow + 1, 1);
-
 	return saveWorkbook(wb);
 }
 
@@ -685,10 +664,7 @@ export async function deleteRowXml(
 	const wb = await parseWorkbook(originalBuffer);
 	const sheet = wb.getWorksheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-
-	const targetRowNum = globalHeaderIdx + 1 + rowIndex;
-	sheet.spliceRows(targetRowNum, 1);
-	updateSheetTableRefs(sheet, targetRowNum, -1);
+	sheet.spliceRows(globalHeaderIdx + 1 + rowIndex, 1);
 	return saveWorkbook(wb);
 }
 
@@ -700,13 +676,9 @@ export async function clearSheetXml(
 	const wb = await parseWorkbook(originalBuffer);
 	const sheet = wb.getWorksheet(sheetName);
 	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-
 	const firstDataRow = globalHeaderIdx + 2;
 	const lastRow = sheet.lastRow?.number ?? firstDataRow;
-	if (lastRow >= firstDataRow) {
-		sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
-	}
-	updateSheetTableRefs(sheet, firstDataRow, -(lastRow - firstDataRow + 1));
+	if (lastRow >= firstDataRow) sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
 	return saveWorkbook(wb);
 }
 
