@@ -199,15 +199,56 @@ export class NextCloudSpreadsheet implements INodeType {
 				displayOptions: { show: { resource: ['sheet'], operation: ['getRows'] } },
 			},
 
-			// Table Get Rows — options + column filter
+			// Table Get Rows — options + filters + column selector
 			{
 				displayName: 'Options', name: 'tableRowOptions', type: 'collection',
 				placeholder: 'Add Option', default: {},
 				displayOptions: { show: { resource: ['table'], operation: ['getRows'] } },
 				options: [
+					{
+						displayName: 'Include Row Number',
+						name: 'includeRowNumber',
+						type: 'boolean',
+						default: false,
+						description: 'Add a "__rowNumber" field to each row (1 = first data row of the table). Use this value in Update Row or Delete Row to target the exact row.',
+					},
 					{ displayName: 'Return Last N Rows', name: 'lastNRows', type: 'number', default: 0, typeOptions: { minValue: 0 }, description: '0 = all rows. 1 = last row only. 2 = last 2 rows, etc.' },
 					{ displayName: 'Start From Column (Position)', name: 'startColumnIndex', type: 'number', default: 1, typeOptions: { minValue: 1 }, description: 'Column position to start from (1 = first column).' },
 				],
+			},
+			{
+				displayName: 'Filters',
+				name: 'tableValueFilters',
+				type: 'fixedCollection',
+				placeholder: 'Add Filter',
+				default: {},
+				typeOptions: { multipleValues: true },
+				displayOptions: { show: { resource: ['table'], operation: ['getRows'] } },
+				description: 'Filter rows where a column matches a specific value. Multiple filters = AND logic (all must match).',
+				options: [{
+					displayName: 'Filter',
+					name: 'filter',
+					values: [
+						{
+							displayName: 'Column Name or ID',
+							name: 'column',
+							type: 'options',
+							typeOptions: {
+								loadOptionsMethod: 'getTableColumnNames',
+								loadOptionsDependsOn: ['filePathFromList', 'filePath', 'tableFromList', 'tableName'],
+							},
+							default: '',
+							description: 'Column to filter on (e.g. N°)',
+						},
+						{
+							displayName: 'Value',
+							name: 'value',
+							type: 'string',
+							default: '',
+							description: 'Value that must match exactly (case-insensitive)',
+						},
+					],
+				}],
 			},
 			{
 				displayName: 'Column Names or IDs', name: 'tableReturnColumns', type: 'multiOptions',
@@ -374,15 +415,41 @@ export class NextCloudSpreadsheet implements INodeType {
 					} else if (operation === 'getRows') {
 						const returnCols = this.getNodeParameter('tableReturnColumns', i, []) as string[];
 						const tblOpts = this.getNodeParameter('tableRowOptions', i, {}) as IDataObject;
+						const includeRowNum = (tblOpts.includeRowNumber as boolean) ?? false;
 						const tLastN = Math.max(0, (tblOpts.lastNRows as number) ?? 0);
 						const tStartCol = Math.max(1, (tblOpts.startColumnIndex as number) ?? 1);
-						let rows = await getTableRows(buffer, tableName);
-						if (tStartCol > 1 && rows.length > 0) {
-							const allCols = Object.keys(rows[0]);
-							const allowed = allCols.slice(tStartCol - 1);
-							rows = rows.map(row => { const out: IDataObject = {}; for (const c of allowed) out[c] = row[c]; return out; });
+
+						// Value filters (column = value)
+						const filtersCol = this.getNodeParameter('tableValueFilters', i, {}) as IDataObject;
+						const valueFilters = ((filtersCol.filter as IDataObject[]) ?? []) as Array<{ column: string; value: string }>;
+
+						// Get ALL rows first (apply value filters via GenericFunctions)
+						let rows = await getTableRows(buffer, tableName, valueFilters);
+
+						// Add __rowNumber (1-based position within table data, before any filtering)
+						if (includeRowNum) {
+							rows = rows.map((row, idx) => ({ __rowNumber: idx + 1, ...row }));
 						}
-						if (returnCols.length > 0) rows = rows.map(row => { const out: IDataObject = {}; for (const c of returnCols) out[c] = row[c]; return out; });
+
+						// Column start offset
+						if (tStartCol > 1 && rows.length > 0) {
+							const dataCols = Object.keys(rows[0]).filter(k => k !== '__rowNumber');
+							const allowed = dataCols.slice(tStartCol - 1);
+							const keep = includeRowNum ? ['__rowNumber', ...allowed] : allowed;
+							rows = rows.map(row => { const out: IDataObject = {}; for (const k of keep) out[k] = row[k]; return out; });
+						}
+
+						// Named column selector
+						if (returnCols.length > 0) {
+							rows = rows.map(row => {
+								const out: IDataObject = {};
+								if (includeRowNum) out['__rowNumber'] = row['__rowNumber'];
+								for (const c of returnCols) out[c] = row[c];
+								return out;
+							});
+						}
+
+						// Last N rows
 						if (tLastN > 0) rows = rows.slice(-tLastN);
 						for (const row of rows) returnData.push({ json: row });
 					} else if (operation === 'appendRow') {
