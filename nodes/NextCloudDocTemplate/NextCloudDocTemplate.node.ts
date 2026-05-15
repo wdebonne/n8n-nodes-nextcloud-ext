@@ -20,6 +20,7 @@ import {
 	extractCarboneVariables,
 	renderCarboneTemplate,
 	buildOutputPath,
+	mergeDocxFiles,
 } from '../shared/GenericFunctions';
 
 export class NextCloudDocTemplate implements INodeType {
@@ -270,6 +271,61 @@ export class NextCloudDocTemplate implements INodeType {
 				description: 'File name for the binary output. Extension should match the Output Format (.docx or .pdf).',
 				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['returnBinary'] } },
 			},
+
+			// ── Conditional Annexes ───────────────────────────────────────────
+			{
+				displayName: 'Conditional Annexes',
+				name: 'annexes',
+				type: 'fixedCollection',
+				placeholder: 'Add Annexe',
+				default: {},
+				typeOptions: { multipleValues: true },
+				displayOptions: { show: { operation: ['fillTemplate'] } },
+				description: 'Append one or more DOCX files after the filled template when a condition is met. Cumulative: all matching annexes are merged in order. Page break is automatically inserted before each annexe.',
+				options: [{
+					displayName: 'Annexe',
+					name: 'annexe',
+					values: [
+						{
+							displayName: 'Condition — Value to Check',
+							name: 'conditionValue',
+							type: 'string',
+							default: '',
+							placeholder: '={{ $json.trottoir }}',
+							description: 'The value to evaluate. Use an n8n expression referencing your workflow data. Leave the Condition as "Always append" to always add this annexe.',
+						},
+						{
+							displayName: 'Condition',
+							name: 'condition',
+							type: 'options',
+							options: [
+								{ name: 'Is Not Empty', value: 'isNotEmpty', description: 'Append if the value is not empty / null / 0 / false' },
+								{ name: 'Equals', value: 'equals', description: 'Append if the value exactly matches Compare To' },
+								{ name: 'Not Equals', value: 'notEquals', description: 'Append if the value does NOT match Compare To' },
+								{ name: 'Contains', value: 'contains', description: 'Append if the value contains the Compare To string' },
+								{ name: 'Always Append', value: 'always', description: 'Append unconditionally (ignore Value to Check)' },
+							],
+							default: 'isNotEmpty',
+						},
+						{
+							displayName: 'Compare To',
+							name: 'compareValue',
+							type: 'string',
+							default: '',
+							description: 'Value to compare against (used for Equals, Not Equals, Contains). Supports expressions.',
+							displayOptions: { show: { condition: ['equals', 'notEquals', 'contains'] } },
+						},
+						{
+							displayName: 'Annexe File Path',
+							name: 'annexePath',
+							type: 'string',
+							default: '',
+							placeholder: '/Templates/Annexes/annexe_trottoir.docx',
+							description: 'Full Nextcloud path to the DOCX annexe to append. Supports expressions — e.g. /Templates/Annexes/annexe_{{ $json.type }}.docx',
+						},
+					],
+				}],
+			},
 		],
 	};
 
@@ -377,6 +433,39 @@ export class NextCloudDocTemplate implements INodeType {
 						throw new NodeOperationError(this.getNode(), `Carbone render error: ${msg}`, { itemIndex: i });
 					}
 
+					// ── Conditional annexe merging ────────────────────────────
+					const annexesRaw = this.getNodeParameter('annexes', i, {}) as IDataObject;
+					const annexeEntries = (annexesRaw.annexe as Array<{
+						conditionValue: string;
+						condition: string;
+						compareValue: string;
+						annexePath: string;
+					}>) ?? [];
+
+					if (annexeEntries.length > 0) {
+						const buffersToMerge: Buffer[] = [filledBuffer];
+
+						for (const entry of annexeEntries) {
+							const { conditionValue, condition, compareValue, annexePath } = entry;
+							if (!annexePath) continue;
+
+							const conditionMet = evaluateAnnexeCondition(conditionValue, condition, compareValue);
+							if (!conditionMet) continue;
+
+							try {
+								const annexeBuffer = await downloadFile(this, creds, annexePath);
+								buffersToMerge.push(annexeBuffer);
+							} catch (annexeErr) {
+								const msg = annexeErr instanceof Error ? annexeErr.message : String(annexeErr);
+								throw new NodeOperationError(this.getNode(), `Failed to load annexe "${annexePath}": ${msg}`, { itemIndex: i });
+							}
+						}
+
+						if (buffersToMerge.length > 1) {
+							filledBuffer = await mergeDocxFiles(buffersToMerge);
+						}
+					}
+
 					const outputMode = this.getNodeParameter('outputMode', i, 'saveToNextcloud') as string;
 
 					// ── Save to Nextcloud ─────────────────────────────────────
@@ -438,4 +527,13 @@ export class NextCloudDocTemplate implements INodeType {
 
 		return [returnData];
 	}
+}
+
+function evaluateAnnexeCondition(value: string, condition: string, compareValue: string): boolean {
+	if (condition === 'always') return true;
+	if (condition === 'isNotEmpty') return value !== '' && value !== null && value !== undefined && value !== '0' && value !== 'false';
+	if (condition === 'equals') return String(value) === String(compareValue);
+	if (condition === 'notEquals') return String(value) !== String(compareValue);
+	if (condition === 'contains') return String(value).includes(compareValue);
+	return false;
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.37] — 2026-05-15
+
+### Ajouté — NextCloud Doc Template : fusion conditionnelle d'annexes
+
+- **Conditional Annexes** (section *fixedCollection* cumulable) : permet d'ajouter un ou plusieurs fichiers DOCX après le template rempli, selon des conditions évaluées au moment de l'exécution.
+  - **Condition — Value to Check** : expression n8n pointant vers la donnée à évaluer (ex : `{{ $json.trottoir }}`).
+  - **Condition** : `Is Not Empty` · `Equals` · `Not Equals` · `Contains` · `Always Append`.
+  - **Compare To** : valeur de comparaison (visible pour Equals, Not Equals, Contains).
+  - **Annexe File Path** : chemin complet Nextcloud du DOCX à fusionner ; supporte les expressions (`/Templates/Annexes/annexe_{{ $json.type }}.docx`).
+  - Les annexes dont la condition est vérifiée sont **cumulées dans l'ordre** — un saut de page est inséré automatiquement avant chaque annexe.
+  - La fusion gère les **images** (copie et renommage des médias pour éviter les collisions de rId) et les **hyperliens**.
+  - Exemple : template (2 pages) + annexe trottoir (1 page) + annexe chaussée (1 page) → document final 4 pages, sans créer de template combiné.
+
+---
+
 ## [1.0.36] — 2026-05-15
 
 ### Modifié — Renommage des nodes (displayName uniquement, aucun impact sur les workflows existants)

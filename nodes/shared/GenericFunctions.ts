@@ -1066,3 +1066,110 @@ export function buildOutputPath(folder: string, fileName: string): string {
 	const name = fileName.replace(/^\/+/, '');
 	return base === '' ? `/${name}` : `${base}/${name}`;
 }
+
+// ---------------------------------------------------------------------------
+// DOCX merge — appends one or more DOCX buffers after the main document,
+// separated by page breaks. Images and hyperlinks are remapped to avoid
+// rId / filename collisions. Each annexe's page-layout (sectPr) is dropped
+// so the merged document keeps the main document's page size / margins.
+// ---------------------------------------------------------------------------
+
+export async function mergeDocxFiles(buffers: Buffer[]): Promise<Buffer> {
+	if (buffers.length === 0) throw new Error('mergeDocxFiles: no buffers provided');
+	if (buffers.length === 1) return buffers[0];
+
+	// Load the main document
+	const mainZip = await JSZip.loadAsync(buffers[0]);
+
+	const mainDocFile = mainZip.file('word/document.xml');
+	if (!mainDocFile) throw new Error('Invalid DOCX: word/document.xml not found');
+	let mainDocXml = await mainDocFile.async('string');
+
+	// Load or create main relationships
+	const mainRelsPath = 'word/_rels/document.xml.rels';
+	const mainRelsFile = mainZip.file(mainRelsPath);
+	let mainRels = mainRelsFile
+		? await mainRelsFile.async('string')
+		: '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+
+	// Track highest existing rId and image index in the main doc
+	let maxRId = Math.max(0, ...[...mainRels.matchAll(/Id="rId(\d+)"/g)].map(m => parseInt(m[1], 10)));
+	let imageCounter = Object.keys(mainZip.files).filter(f => f.startsWith('word/media/')).length;
+
+	// Content to inject before </w:body>
+	let insertContent = '';
+
+	for (let docIdx = 1; docIdx < buffers.length; docIdx++) {
+		const annexeZip = await JSZip.loadAsync(buffers[docIdx]);
+
+		const annexeDocFile = annexeZip.file('word/document.xml');
+		if (!annexeDocFile) continue;
+		let annexeDocXml = await annexeDocFile.async('string');
+
+		// Parse annexe relationships
+		const annexeRelsFile = annexeZip.file('word/_rels/document.xml.rels');
+		const annexeRels = annexeRelsFile ? await annexeRelsFile.async('string') : '';
+
+		// Map each old rId → new rId and copy assets
+		const rIdMap: Record<string, string> = {};
+		for (const match of annexeRels.matchAll(/Id="(rId\d+)"[^/]*Type="([^"]+)"[^/]*Target="([^"]+)"/g)) {
+			const [, oldRId, type, target] = match;
+			maxRId++;
+			const newRId = `rId${maxRId}`;
+			rIdMap[oldRId] = newRId;
+
+			if (type.includes('/image')) {
+				// Resolve image path inside the annexe ZIP
+				const imageSrc = target.startsWith('media/') ? `word/${target}` : `word/media/${target.split('/').pop()}`;
+				const imageFile = annexeZip.file(imageSrc);
+				if (imageFile) {
+					imageCounter++;
+					const ext = (imageSrc.split('.').pop() ?? 'png').toLowerCase();
+					const newName = `image${imageCounter}.${ext}`;
+					mainZip.file(`word/media/${newName}`, await imageFile.async('uint8array'));
+					mainRels = mainRels.replace(
+						'</Relationships>',
+						`<Relationship Id="${newRId}" Type="${type}" Target="media/${newName}"/></Relationships>`,
+					);
+				}
+			} else if (type.includes('/hyperlink')) {
+				mainRels = mainRels.replace(
+					'</Relationships>',
+					`<Relationship Id="${newRId}" Type="${type}" Target="${target}" TargetMode="External"/></Relationships>`,
+				);
+			}
+		}
+
+		// Remap rId references in the annexe XML
+		for (const [oldRId, newRId] of Object.entries(rIdMap)) {
+			annexeDocXml = annexeDocXml.replace(new RegExp(`r:id="${oldRId}"`, 'g'), `r:id="${newRId}"`);
+			annexeDocXml = annexeDocXml.replace(new RegExp(`r:embed="${oldRId}"`, 'g'), `r:embed="${newRId}"`);
+			annexeDocXml = annexeDocXml.replace(new RegExp(`r:link="${oldRId}"`, 'g'), `r:link="${newRId}"`);
+		}
+
+		// Extract body content between <w:body> … </w:body>, dropping <w:sectPr>
+		const bodyStart = annexeDocXml.indexOf('<w:body>');
+		const bodyEnd = annexeDocXml.lastIndexOf('</w:body>');
+		if (bodyStart === -1 || bodyEnd === -1) continue;
+
+		let bodyContent = annexeDocXml.slice(bodyStart + '<w:body>'.length, bodyEnd);
+		bodyContent = bodyContent.replace(/<w:sectPr[\s\S]*?<\/w:sectPr>\s*/g, '');
+
+		// Insert page break then annexe content
+		insertContent += '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+		insertContent += bodyContent;
+	}
+
+	// Splice insertContent before </w:body>
+	const insertAt = mainDocXml.lastIndexOf('</w:body>');
+	mainDocXml = mainDocXml.slice(0, insertAt) + insertContent + mainDocXml.slice(insertAt);
+
+	mainZip.file('word/document.xml', mainDocXml);
+	mainZip.file(mainRelsPath, mainRels);
+
+	return Buffer.from(await mainZip.generateAsync({
+		type: 'nodebuffer',
+		compression: 'DEFLATE',
+		compressionOptions: { level: 6 },
+	}));
+}
