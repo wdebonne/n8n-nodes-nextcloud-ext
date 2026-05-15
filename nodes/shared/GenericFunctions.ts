@@ -11,6 +11,7 @@ import {
 import { XMLParser } from 'fast-xml-parser';
 import JSZip from 'jszip';
 import * as xlsx from 'xlsx';
+import ExcelJS from 'exceljs';
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -397,212 +398,128 @@ async function zipToBuffer(zip: import('jszip')): Promise<Buffer> {
 	}));
 }
 
-// ── Append a row directly in XML (no SheetJS write) ──────────────────────────
+// kept for Table operations
+export async function writeSheetPreservingFormat(
+	originalBuffer: Buffer,
+	_modifiedWorkbook: xlsx.WorkBook,
+	_fileExt: string,
+): Promise<Buffer> {
+	return originalBuffer;
+}
+
+// ---------------------------------------------------------------------------
+// ExcelJS-based write operations — preserves ALL Excel structure including
+// named tables, styles, merged cells, conditional formatting and page layout.
+// ExcelJS is the only reliable way to write xlsx without destroying the file.
+// ---------------------------------------------------------------------------
+
+async function loadExcelJS(buffer: Buffer): Promise<ExcelJS.Workbook> {
+	const wb = new ExcelJS.Workbook();
+	await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+	return wb;
+}
+
+async function saveExcelJS(wb: ExcelJS.Workbook): Promise<Buffer> {
+	const result = await wb.xlsx.writeBuffer();
+	return Buffer.from(result as ArrayBuffer);
+}
+
+// Append a row using ExcelJS (preserves all formatting)
 export async function appendRowXml(
 	originalBuffer: Buffer,
 	sheetName: string,
-	globalHeaderIdx: number, // 0-based row with column headers
-	colStart: number,         // 0-based first column
-	colEnd: number,           // 0-based last column
+	globalHeaderIdx: number,
+	colStart: number,
+	colEnd: number,
 	rowData: IDataObject,
-	workbook: xlsx.WorkBook,  // for reading headers (SheetJS read is fine)
+	_workbook: xlsx.WorkBook,
 ): Promise<Buffer> {
-	const zip = await JSZip.loadAsync(originalBuffer);
-	const wsPath = await findWsPath(zip, sheetName);
-	if (!wsPath) throw new Error(`Sheet "${sheetName}" not found in ZIP`);
+	const wb = await loadExcelJS(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	const sheetXml = (await zip.file(wsPath)?.async('text')) ?? '';
-	const ssPath = 'xl/sharedStrings.xml';
-	let ssXml = (await zip.file(ssPath)?.async('text')) ?? '';
-	const { list: existingStrings, map: ssMap } = parseSharedStrings(ssXml);
-
-	// Get column headers from SheetJS (already parsed, reliable)
-	const sheet = workbook.Sheets[sheetName] ?? {};
+	// Read headers from the configured header row (1-based in ExcelJS)
+	const headerRow = sheet.getRow(globalHeaderIdx + 1);
 	const headers: string[] = [];
-	for (let c = colStart; c <= colEnd; c++) {
-		const cell = sheet[xlsx.utils.encode_cell({ r: globalHeaderIdx, c })];
-		headers.push(cell ? String(cell.v).trim() : `Column${c - colStart + 1}`);
+	for (let c = colStart + 1; c <= colEnd + 1; c++) {
+		const cell = headerRow.getCell(c);
+		headers.push(cell.value ? String(cell.value) : '');
 	}
 
-	// Determine new row number from current dimension
-	const dimMatch = sheetXml.match(/<dimension[^>]*ref="([^"]+)"/);
-	const curRange = dimMatch ? xlsx.utils.decode_range(dimMatch[1]) : { s: { r: 0, c: colStart }, e: { r: globalHeaderIdx, c: colEnd } };
-	const newRowIdx = curRange.e.r + 1; // 0-based
-	const newRowNum = newRowIdx + 1;    // 1-based (Excel)
-
-	// Build cell XML
-	const pendingStrings: string[] = [];
-	let cellsXml = '';
-	for (let i = 0; i < headers.length; i++) {
-		const val = rowData[headers[i]];
-		if (val === undefined) continue;
-		const colLetter = xlsx.utils.encode_col(colStart + i);
-		cellsXml += buildCellXml(colLetter, newRowNum, val, ssMap, pendingStrings);
-	}
-	const newRowXml = `<row r="${newRowNum}">${cellsXml}</row>`;
-
-	// Inject row before </sheetData>
-	let updatedXml = sheetXml.replace('</sheetData>', newRowXml + '</sheetData>');
-
-	// Update <dimension>
-	const newDimRef = xlsx.utils.encode_range({ s: curRange.s, e: { r: newRowIdx, c: curRange.e.c } });
-	updatedXml = updatedXml.replace(/<dimension[^>]*\/>/, `<dimension ref="${newDimRef}"/>`);
-
-	zip.file(wsPath, updatedXml);
-
-	// Update sharedStrings
-	if (pendingStrings.length > 0) {
-		ssXml = appendSharedStrings(ssXml || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"></sst>`, pendingStrings);
-		zip.file(ssPath, ssXml);
+	// Build values array in column order
+	const values: (string | number | boolean | null)[] = new Array(colStart).fill(null);
+	for (const header of headers) {
+		const val = rowData[header];
+		values.push(val !== undefined ? (val as string | number | boolean) : null);
 	}
 
-	// Update table refs
-	await updateLinkedTableRefs(zip, wsPath, newRowIdx);
-
-	return zipToBuffer(zip);
+	sheet.addRow(values);
+	return saveExcelJS(wb);
 }
 
-// ── Update a row directly in XML ─────────────────────────────────────────────
+// Update a row using ExcelJS
 export async function updateRowXml(
 	originalBuffer: Buffer,
 	sheetName: string,
 	globalHeaderIdx: number,
 	colStart: number,
 	colEnd: number,
-	rowIndex: number, // 1-based data row
+	rowIndex: number,
 	rowData: IDataObject,
-	workbook: xlsx.WorkBook,
+	_workbook: xlsx.WorkBook,
 ): Promise<Buffer> {
-	const zip = await JSZip.loadAsync(originalBuffer);
-	const wsPath = await findWsPath(zip, sheetName);
-	if (!wsPath) throw new Error(`Sheet "${sheetName}" not found in ZIP`);
+	const wb = await loadExcelJS(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	const sheetXml = (await zip.file(wsPath)?.async('text')) ?? '';
-	const ssPath = 'xl/sharedStrings.xml';
-	let ssXml = (await zip.file(ssPath)?.async('text')) ?? '';
-	const { map: ssMap } = parseSharedStrings(ssXml);
+	const headerRow = sheet.getRow(globalHeaderIdx + 1);
+	const targetRowNum = globalHeaderIdx + 1 + rowIndex; // 1-based ExcelJS
+	const targetRow = sheet.getRow(targetRowNum);
 
-	const sheet = workbook.Sheets[sheetName] ?? {};
-	const headers: string[] = [];
-	for (let c = colStart; c <= colEnd; c++) {
-		const cell = sheet[xlsx.utils.encode_cell({ r: globalHeaderIdx, c })];
-		headers.push(cell ? String(cell.v).trim() : `Column${c - colStart + 1}`);
+	for (let c = colStart + 1; c <= colEnd + 1; c++) {
+		const header = headerRow.getCell(c).value;
+		if (!header) continue;
+		const val = rowData[String(header)];
+		if (val !== undefined) {
+			targetRow.getCell(c).value = val as ExcelJS.CellValue;
+		}
 	}
-
-	const targetRowNum = globalHeaderIdx + rowIndex + 1; // 1-based Excel row
-
-	// Build new cell XML for this row
-	const pendingStrings: string[] = [];
-	let cellsXml = '';
-	for (let i = 0; i < headers.length; i++) {
-		const val = rowData[headers[i]];
-		if (val === undefined) continue;
-		const colLetter = xlsx.utils.encode_col(colStart + i);
-		cellsXml += buildCellXml(colLetter, targetRowNum, val, ssMap, pendingStrings);
-	}
-
-	// Replace the target row in sheetData (or insert if not found)
-	const rowTagRe = new RegExp(`<row[^>]*\\br="${targetRowNum}"[^>]*>[\\s\\S]*?<\\/row>`);
-	const newRowTag = `<row r="${targetRowNum}">${cellsXml}</row>`;
-	const updatedXml = rowTagRe.test(sheetXml)
-		? sheetXml.replace(rowTagRe, newRowTag)
-		: sheetXml.replace('</sheetData>', newRowTag + '</sheetData>');
-
-	zip.file(wsPath, updatedXml);
-
-	if (pendingStrings.length > 0) {
-		zip.file(ssPath, appendSharedStrings(ssXml, pendingStrings));
-	}
-
-	return zipToBuffer(zip);
+	targetRow.commit();
+	return saveExcelJS(wb);
 }
 
-// ── Delete a row directly in XML ──────────────────────────────────────────────
+// Delete a row using ExcelJS
 export async function deleteRowXml(
 	originalBuffer: Buffer,
 	sheetName: string,
 	globalHeaderIdx: number,
-	rowIndex: number, // 1-based data row
+	rowIndex: number,
 ): Promise<Buffer> {
-	const zip = await JSZip.loadAsync(originalBuffer);
-	const wsPath = await findWsPath(zip, sheetName);
-	if (!wsPath) throw new Error(`Sheet "${sheetName}" not found in ZIP`);
+	const wb = await loadExcelJS(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	let sheetXml = (await zip.file(wsPath)?.async('text')) ?? '';
-
-	const targetRowNum = globalHeaderIdx + rowIndex + 1; // 1-based Excel
-
-	// Remove the target row
-	const rowTagRe = new RegExp(`<row[^>]*\\br="${targetRowNum}"[^>]*>[\\s\\S]*?<\\/row>`);
-	sheetXml = sheetXml.replace(rowTagRe, '');
-
-	// Shift all subsequent row r= numbers down by 1
-	sheetXml = sheetXml.replace(/<row\s[^>]*\br="(\d+)"/g, (match, rStr) => {
-		const r = parseInt(rStr, 10);
-		return r > targetRowNum ? match.replace(`r="${r}"`, `r="${r - 1}"`) : match;
-	});
-
-	// Also shift cell refs (e.g., A102 → A101) for rows after deleted row
-	sheetXml = sheetXml.replace(/<c\s[^>]*\br="([A-Z]+)(\d+)"/g, (match, col, rowStr) => {
-		const r = parseInt(rowStr, 10);
-		return r > targetRowNum ? match.replace(`r="${col}${r}"`, `r="${col}${r - 1}"`) : match;
-	});
-
-	// Update dimension
-	const dimMatch = sheetXml.match(/<dimension[^>]*ref="([^"]+)"/);
-	if (dimMatch) {
-		const range = xlsx.utils.decode_range(dimMatch[1]);
-		if (range.e.r >= 1) {
-			range.e.r -= 1;
-			sheetXml = sheetXml.replace(/<dimension[^>]*\/>/, `<dimension ref="${xlsx.utils.encode_range(range)}"/>`);
-		}
-	}
-
-	zip.file(wsPath, sheetXml);
-
-	// Update table refs
-	const dimRange = dimMatch ? xlsx.utils.decode_range(
-		sheetXml.match(/<dimension[^>]*ref="([^"]+)"/)?.[1] ?? 'A1'
-	) : { e: { r: globalHeaderIdx, c: 0 } };
-	await updateLinkedTableRefs(zip, wsPath, dimRange.e.r);
-
-	return zipToBuffer(zip);
+	const targetRowNum = globalHeaderIdx + 1 + rowIndex;
+	sheet.spliceRows(targetRowNum, 1);
+	return saveExcelJS(wb);
 }
 
-// ── Clear data rows (keep header row) ────────────────────────────────────────
+// Clear data rows (keep header row) using ExcelJS
 export async function clearSheetXml(
 	originalBuffer: Buffer,
 	sheetName: string,
 	globalHeaderIdx: number,
 ): Promise<Buffer> {
-	const zip = await JSZip.loadAsync(originalBuffer);
-	const wsPath = await findWsPath(zip, sheetName);
-	if (!wsPath) throw new Error(`Sheet "${sheetName}" not found in ZIP`);
+	const wb = await loadExcelJS(originalBuffer);
+	const sheet = wb.getWorksheet(sheetName);
+	if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
 
-	let sheetXml = (await zip.file(wsPath)?.async('text')) ?? '';
-	const headerRowNum = globalHeaderIdx + 1; // 1-based
-
-	// Remove all rows with r > headerRowNum from sheetData
-	sheetXml = sheetXml.replace(/<row\s[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (match, rStr) => {
-		return parseInt(rStr, 10) > headerRowNum ? '' : match;
-	});
-
-	// Update dimension to just the header row
-	sheetXml = sheetXml.replace(/<dimension[^>]*\/>/, `<dimension ref="${xlsx.utils.encode_col(0)}${headerRowNum}:${xlsx.utils.encode_col(10)}${headerRowNum}"/>`);
-
-	zip.file(wsPath, sheetXml);
-	await updateLinkedTableRefs(zip, wsPath, globalHeaderIdx);
-	return zipToBuffer(zip);
-}
-
-// kept for Table operations (which already handle ZIP preservation correctly)
-export async function writeSheetPreservingFormat(
-	originalBuffer: Buffer,
-	_modifiedWorkbook: xlsx.WorkBook,
-	_fileExt: string,
-): Promise<Buffer> {
-	// This function is now only used as a fallback — Sheet ops use the XML functions above
-	return originalBuffer;
+	const firstDataRow = globalHeaderIdx + 2; // 1-based, row after header
+	const lastRow = sheet.lastRow?.number ?? firstDataRow;
+	if (lastRow >= firstDataRow) {
+		sheet.spliceRows(firstDataRow, lastRow - firstDataRow + 1);
+	}
+	return saveExcelJS(wb);
 }
 
 function extToBookType(ext: string): xlsx.BookType {
