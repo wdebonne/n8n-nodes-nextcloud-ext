@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.40] — 2026-05-15
+
+### Documentation
+- **README.md** : section *Annexes conditionnelles* promue au niveau `##` avec son propre séparateur `---` pour la rendre visible comme section de premier plan. Ajout d'exemples de cumul et de chemin dynamique par expression.
+
+---
+
 ## [1.0.39] — 2026-05-15
 
 ### Documentation

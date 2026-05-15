@@ -248,40 +248,64 @@ Scanne le template et retourne tous les placeholders `{d.xxx}` trouvés.
 }
 ```
 
-### Annexes conditionnelles (fusion de DOCX)
+---
 
-Ajoutez un ou plusieurs fichiers DOCX après le template rempli, selon des conditions évaluées à l'exécution. Toutes les annexes dont la condition est vraie sont **fusionnées dans l'ordre** avec un saut de page automatique entre chaque.
+## NextCloud Doc Template — Annexes conditionnelles
 
-**Configuration :**
+> Cette fonctionnalité permet d'**ajouter automatiquement des fichiers DOCX supplémentaires** (règlements, schémas, annexes légales…) à la fin du document généré, selon des conditions évaluées à l'exécution. Un saut de page est inséré automatiquement avant chaque annexe.
+
+**Exemple :** template principal (2 pages) + annexe trottoir (1 page) + annexe chaussée (1 page) → document final de **4 pages**, sans créer de template combiné.
+
+### Configuration
+
+**1. Sélectionner le dossier des annexes (partagé) :**
 
 ```
-Annexes Folder  ▼  📁 Templates / Annexes    ← dossier partagé
-
-[+ Add Annexe]
-
-  Condition — Value to Check : {{ $json.trottoir }}
-  Condition                  : Is Not Empty ▼
-  Annexe File                : annexe_trottoir.docx ▼
-  Or: Annexe File Path       : (vide)
-
-  Condition — Value to Check : {{ $json.chaussee }}
-  Condition                  : Is Not Empty ▼
-  Annexe File                : annexe_chaussee.docx ▼
+Annexes Folder  ▼  📁 Templates / Annexes
 ```
 
-**Conditions disponibles :**
+**2. Ajouter une entrée par annexe ([+ Add Annexe]) :**
 
-| Condition | Déclenchement |
+```
+Condition — Value to Check : {{ $json.trottoir }}
+Condition                  : Is Not Empty ▼
+Annexe File                : annexe_trottoir.docx ▼   ← dropdown chargé depuis Annexes Folder
+Or: Annexe File Path       : (vide)
+```
+
+### Conditions disponibles
+
+| Condition | L'annexe est ajoutée quand… |
 |---|---|
 | **Is Not Empty** | La valeur n'est pas vide / null / 0 / false |
 | **Equals** | La valeur correspond exactement à *Compare To* |
-| **Not Equals** | La valeur ne correspond pas à *Compare To* |
+| **Not Equals** | La valeur est différente de *Compare To* |
 | **Contains** | La valeur contient la chaîne *Compare To* |
-| **Always Append** | Toujours ajouter cette annexe |
+| **Always Append** | Toujours ajouter, quelle que soit la valeur |
 
-> Le champ **Or: Annexe File Path (Expression)** permet un chemin dynamique et prend la priorité sur le dropdown.
+### Chemin dynamique par expression
 
-La fusion gère les **images** (copie et renommage automatique pour éviter les conflits) et les **hyperliens**.
+Le champ **Or: Annexe File Path (Expression)** prend la priorité sur le dropdown — utile quand le nom du fichier dépend d'une donnée du workflow :
+
+```
+Or: Annexe File Path : /Templates/Annexes/annexe_{{ $json.type_voirie }}.docx
+```
+
+### Cumul de plusieurs annexes
+
+Toutes les annexes dont la condition est vraie sont fusionnées **dans l'ordre** de la liste. La fusion gère les **images** (copie et renommage automatique pour éviter les conflits de rId) et les **hyperliens**.
+
+```
+[Annexe 1] trottoir   Is Not Empty → annexe_trottoir.docx   ✓ ajoutée
+[Annexe 2] chaussee   Is Not Empty → annexe_chaussee.docx   ✗ ignorée (champ vide)
+[Annexe 3] securite   Equals "Barrières" → annexe_barriere.docx  ✓ ajoutée
+
+Résultat : template (2p) + annexe_trottoir (1p) + annexe_barriere (1p) = 4 pages
+```
+
+---
+
+## Node — NextCloud Doc Template (suite)
 
 ### Formateurs Carbone
 
