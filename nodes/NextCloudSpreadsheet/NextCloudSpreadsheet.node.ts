@@ -423,12 +423,22 @@ export class NextCloudSpreadsheet implements INodeType {
 						const filtersCol = this.getNodeParameter('tableValueFilters', i, {}) as IDataObject;
 						const valueFilters = ((filtersCol.filter as IDataObject[]) ?? []) as Array<{ column: string; value: string }>;
 
-						// Get ALL rows first (apply value filters via GenericFunctions)
-						let rows = await getTableRows(buffer, tableName, valueFilters);
+						// Step 1: get ALL rows without any filter
+						let rows = await getTableRows(buffer, tableName);
 
-						// Add __rowNumber (1-based position within table data, before any filtering)
+						// Step 2: add __rowNumber BEFORE filtering so it reflects
+						//         the actual row position in the table (not filtered position)
 						if (includeRowNum) {
 							rows = rows.map((row, idx) => ({ __rowNumber: idx + 1, ...row }));
+						}
+
+						// Step 3: apply value filters AFTER assigning row numbers
+						if (valueFilters.length > 0) {
+							rows = rows.filter(row =>
+								valueFilters.every(f =>
+									String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase(),
+								),
+							);
 						}
 
 						// Column start offset
