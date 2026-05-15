@@ -19,6 +19,7 @@ import {
 	searchDocFiles,
 	extractCarboneVariables,
 	renderCarboneTemplate,
+	buildOutputPath,
 } from '../shared/GenericFunctions';
 
 export class NextCloudDocTemplate implements INodeType {
@@ -59,9 +60,9 @@ export class NextCloudDocTemplate implements INodeType {
 				default: 'fillTemplate',
 			},
 
-			// ── File selection ────────────────────────────────────────────────
+			// ── Template file selection ───────────────────────────────────────
 			{
-				displayName: 'From',
+				displayName: 'Template From',
 				name: 'filePathMode',
 				type: 'options',
 				options: [
@@ -72,13 +73,13 @@ export class NextCloudDocTemplate implements INodeType {
 				description: 'How to specify the template file',
 			},
 			{
-				displayName: 'Folder',
+				displayName: 'Template Folder',
 				name: 'folderPath',
 				type: 'options',
 				typeOptions: { loadOptionsMethod: 'getFolders' },
 				displayOptions: { show: { filePathMode: ['list'] } },
 				default: '/',
-				description: 'Filter the file list to a specific folder',
+				description: 'Folder containing the template',
 			},
 			{
 				displayName: 'Template File',
@@ -165,7 +166,28 @@ export class NextCloudDocTemplate implements INodeType {
 				type: 'json',
 				default: '{}',
 				displayOptions: { show: { operation: ['fillTemplate'], dataMode: ['json'] } },
-				description: 'JSON object passed as the "d" context in the template. Use {d.field} for strings and {d.array[i].field} to repeat sections/pages for each array item. Supports n8n expressions: ={{ { "items": $json.items, "title": $json.title } }}',
+				description: 'JSON object passed as the "d" context in the template. Use {d.field} for strings and {d.array[i].field} to repeat sections/pages for each array item.',
+			},
+
+			// ── Output format ─────────────────────────────────────────────────
+			{
+				displayName: 'Output Format',
+				name: 'outputFormat',
+				type: 'options',
+				displayOptions: { show: { operation: ['fillTemplate'] } },
+				options: [
+					{
+						name: 'DOCX',
+						value: 'docx',
+						description: 'Word document — no external dependency',
+					},
+					{
+						name: 'PDF',
+						value: 'pdf',
+						description: 'PDF — requires LibreOffice installed on the n8n server',
+					},
+				],
+				default: 'docx',
 			},
 
 			// ── Output mode ───────────────────────────────────────────────────
@@ -178,30 +200,60 @@ export class NextCloudDocTemplate implements INodeType {
 					{
 						name: 'Save to Nextcloud',
 						value: 'saveToNextcloud',
-						description: 'Upload the filled document to a path on Nextcloud',
+						description: 'Upload the filled document to a folder on Nextcloud',
 					},
 					{
 						name: 'Return as Binary',
 						value: 'returnBinary',
-						description: 'Return the filled document as a binary item (for email attachments, downloads, etc.)',
+						description: 'Return the filled document as a binary item (email attachments, downloads, etc.)',
 					},
 				],
 				default: 'saveToNextcloud',
 			},
 
-			// Save to Nextcloud: output path
+			// ── Save to Nextcloud: folder browser ─────────────────────────────
+			{
+				displayName: 'Output Destination',
+				name: 'outputPathMode',
+				type: 'options',
+				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['saveToNextcloud'] } },
+				options: [
+					{ name: 'Select Folder + File Name', value: 'folderBrowser' },
+					{ name: 'By Path (Expression)', value: 'path' },
+				],
+				default: 'folderBrowser',
+				description: 'How to specify where to save the output file',
+			},
+			{
+				displayName: 'Output Folder',
+				name: 'outputFolder',
+				type: 'options',
+				typeOptions: { loadOptionsMethod: 'getOutputFolders' },
+				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['saveToNextcloud'], outputPathMode: ['folderBrowser'] } },
+				default: '/',
+				description: 'Folder on Nextcloud where the file will be saved',
+			},
+			{
+				displayName: 'Output File Name',
+				name: 'outputFileNameBrowser',
+				type: 'string',
+				default: '',
+				placeholder: 'contrat_{{ $json.client }}.docx',
+				description: 'File name only (no path). Supports expressions. Extension should match the Output Format (.docx or .pdf).',
+				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['saveToNextcloud'], outputPathMode: ['folderBrowser'] } },
+			},
 			{
 				displayName: 'Output File Path',
 				name: 'outputPath',
 				type: 'string',
 				default: '',
 				placeholder: '/Documents/Filled/contrat_2025.docx',
-				description: 'Path on Nextcloud where the filled document will be saved. The parent folder must already exist. Supports expressions.',
-				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['saveToNextcloud'] } },
+				description: 'Full path on Nextcloud. The parent folder must already exist. Supports expressions.',
+				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['saveToNextcloud'], outputPathMode: ['path'] } },
 				required: true,
 			},
 
-			// Return as Binary: property name + file name
+			// ── Return as Binary ──────────────────────────────────────────────
 			{
 				displayName: 'Binary Property',
 				name: 'binaryPropertyName',
@@ -215,7 +267,7 @@ export class NextCloudDocTemplate implements INodeType {
 				name: 'outputFileName',
 				type: 'string',
 				default: 'document.docx',
-				description: 'File name for the binary output (used as attachment name when sending by email)',
+				description: 'File name for the binary output. Extension should match the Output Format (.docx or .pdf).',
 				displayOptions: { show: { operation: ['fillTemplate'], outputMode: ['returnBinary'] } },
 			},
 		],
@@ -231,6 +283,10 @@ export class NextCloudDocTemplate implements INodeType {
 
 		loadOptions: {
 			async getFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return getFolders(this);
+			},
+			// Separate method for the output folder so it can be used independently
+			async getOutputFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return getFolders(this);
 			},
 			async getDocFiles(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
@@ -263,6 +319,7 @@ export class NextCloudDocTemplate implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
+				// Resolve template file path
 				const filePathMode = this.getNodeParameter('filePathMode', i, 'list') as string;
 				const filePath = filePathMode === 'list'
 					? (this.getNodeParameter('filePathFromList', i, '') as string)
@@ -298,7 +355,6 @@ export class NextCloudDocTemplate implements INodeType {
 							if (entry.name) data[entry.name] = entry.value ?? '';
 						}
 					} else {
-						// JSON mode
 						const jsonRaw = this.getNodeParameter('jsonData', i, '{}') as string | IDataObject;
 						if (typeof jsonRaw === 'string') {
 							try { data = JSON.parse(jsonRaw) as Record<string, unknown>; }
@@ -308,10 +364,14 @@ export class NextCloudDocTemplate implements INodeType {
 						}
 					}
 
+					// Output format
+					const outputFormat = this.getNodeParameter('outputFormat', i, 'docx') as 'docx' | 'pdf';
+					const mimeType = outputFormat === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 					// Render with Carbone
 					let filledBuffer: Buffer;
 					try {
-						filledBuffer = await renderCarboneTemplate(buffer, data);
+						filledBuffer = await renderCarboneTemplate(buffer, data, outputFormat);
 					} catch (carboneErr) {
 						const msg = carboneErr instanceof Error ? carboneErr.message : String(carboneErr);
 						throw new NodeOperationError(this.getNode(), `Carbone render error: ${msg}`, { itemIndex: i });
@@ -319,38 +379,46 @@ export class NextCloudDocTemplate implements INodeType {
 
 					const outputMode = this.getNodeParameter('outputMode', i, 'saveToNextcloud') as string;
 
+					// ── Save to Nextcloud ─────────────────────────────────────
 					if (outputMode === 'saveToNextcloud') {
-						const outputPath = this.getNodeParameter('outputPath', i, '') as string;
-						if (!outputPath) throw new NodeOperationError(this.getNode(), '"Output File Path" is required when saving to Nextcloud', { itemIndex: i });
-						await uploadFile(
-							this, creds, outputPath, filledBuffer,
-							'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-						);
+						const outputPathMode = this.getNodeParameter('outputPathMode', i, 'folderBrowser') as string;
+						let outputPath: string;
+
+						if (outputPathMode === 'folderBrowser') {
+							const folder = this.getNodeParameter('outputFolder', i, '/') as string;
+							const fileName = this.getNodeParameter('outputFileNameBrowser', i, '') as string;
+							if (!fileName) throw new NodeOperationError(this.getNode(), '"Output File Name" is required', { itemIndex: i });
+							outputPath = buildOutputPath(folder, fileName);
+						} else {
+							outputPath = this.getNodeParameter('outputPath', i, '') as string;
+							if (!outputPath) throw new NodeOperationError(this.getNode(), '"Output File Path" is required', { itemIndex: i });
+						}
+
+						await uploadFile(this, creds, outputPath, filledBuffer, mimeType);
 						returnData.push({
 							json: {
 								success: true,
 								operation: 'fillTemplate',
 								templatePath: filePath,
 								outputPath,
+								outputFormat,
 								variablesUsed: Object.keys(data),
 								count: Object.keys(data).length,
 							},
 						});
 
+					// ── Return as Binary ──────────────────────────────────────
 					} else {
-						// Return as binary
 						const binaryProp = this.getNodeParameter('binaryPropertyName', i, 'data') as string;
-						const fileName = this.getNodeParameter('outputFileName', i, 'document.docx') as string;
-						const binaryData = await this.helpers.prepareBinaryData(
-							filledBuffer, fileName,
-							'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-						);
+						const fileName = this.getNodeParameter('outputFileName', i, `document.${outputFormat}`) as string;
+						const binaryData = await this.helpers.prepareBinaryData(filledBuffer, fileName, mimeType);
 						returnData.push({
 							json: {
 								success: true,
 								operation: 'fillTemplate',
 								templatePath: filePath,
 								fileName,
+								outputFormat,
 								variablesUsed: Object.keys(data),
 								count: Object.keys(data).length,
 							},

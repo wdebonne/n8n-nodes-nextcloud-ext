@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.34] — 2026-05-15
+
+### Modifié — Nextcloud Doc Template
+
+- **Sélecteur de dossier de sortie** : remplacement du champ "Output File Path" (texte libre) par un sélecteur en deux champs — *Output Folder* (dropdown arborescent identique au sélecteur de template) + *Output File Name* (nom de fichier seul). L'ancien mode "By Path (Expression)" reste disponible pour les cas avancés.
+- **Format de sortie PDF** : nouvelle option *Output Format* → `DOCX` (défaut, sans dépendance) ou `PDF` (nécessite LibreOffice sur le serveur n8n). Disponible aussi bien en mode "Save to Nextcloud" qu'en "Return as Binary".
+
+---
+
 ## [1.0.33] — 2026-05-15
 
 ### Ajouté

@@ -1035,10 +1035,12 @@ export async function extractCarboneVariables(buffer: Buffer): Promise<string[]>
 	return [...variables].sort();
 }
 
-// Render a Carbone template (DOCX/ODT buffer) with the given data
+// Render a Carbone template (DOCX/ODT buffer) with the given data.
+// outputFormat: 'docx' (default) or 'pdf' (requires LibreOffice on the server)
 export async function renderCarboneTemplate(
 	buffer: Buffer,
 	data: Record<string, unknown>,
+	outputFormat: 'docx' | 'pdf' = 'docx',
 ): Promise<Buffer> {
 	const tmpDir = os.tmpdir();
 	const uid = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -1046,8 +1048,9 @@ export async function renderCarboneTemplate(
 
 	try {
 		fs.writeFileSync(inputPath, buffer);
+		const options: Record<string, unknown> = outputFormat === 'pdf' ? { convertTo: 'pdf' } : {};
 		return await new Promise<Buffer>((resolve, reject) => {
-			carbone.render(inputPath, data, {}, (err: Error | null, result: Buffer) => {
+			carbone.render(inputPath, data, options, (err: Error | null, result: Buffer) => {
 				if (err) reject(err);
 				else resolve(result);
 			});
@@ -1055,4 +1058,11 @@ export async function renderCarboneTemplate(
 	} finally {
 		try { fs.unlinkSync(inputPath); } catch { /* ignore cleanup errors */ }
 	}
+}
+
+// Resolve an output Nextcloud path from folder + filename (normalises slashes)
+export function buildOutputPath(folder: string, fileName: string): string {
+	const base = (folder || '/').replace(/\/+$/, '');
+	const name = fileName.replace(/^\/+/, '');
+	return base === '' ? `/${name}` : `${base}/${name}`;
 }
