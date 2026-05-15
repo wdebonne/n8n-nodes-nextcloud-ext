@@ -28,6 +28,7 @@ import {
 	getFolders,
 	getPdfFiles,
 	searchPdfFiles,
+	buildOutputPath,
 } from '../shared/GenericFunctions';
 
 // ---------------------------------------------------------------------------
@@ -304,13 +305,43 @@ export class NextCloudPdf implements INodeType {
 
 			// ── Save to Nextcloud ─────────────────────────────────────────────
 			{
-				displayName: 'Chemin de sortie',
+				displayName: 'Destination de sortie',
+				name: 'outputPathMode',
+				type: 'options',
+				displayOptions: { show: { operation: ['fillFields'], outputMode: ['saveToNextcloud'] } },
+				options: [
+					{ name: 'Choisir un dossier + nom de fichier', value: 'folderBrowser' },
+					{ name: 'Par chemin complet (expression)', value: 'path' },
+				],
+				default: 'folderBrowser',
+				description: 'Comment spécifier où sauvegarder le PDF rempli',
+			},
+			{
+				displayName: 'Dossier de sortie',
+				name: 'outputFolder',
+				type: 'options',
+				typeOptions: { loadOptionsMethod: 'getOutputFolders' },
+				displayOptions: { show: { operation: ['fillFields'], outputMode: ['saveToNextcloud'], outputPathMode: ['folderBrowser'] } },
+				default: '/',
+				description: 'Dossier sur Nextcloud où le PDF sera sauvegardé',
+			},
+			{
+				displayName: 'Nom du fichier de sortie',
+				name: 'outputFileNameBrowser',
+				type: 'string',
+				default: '',
+				placeholder: 'formulaire_{{ $json["Nom de la manifestation"] }}.pdf',
+				description: 'Nom du fichier uniquement (sans chemin). Supporte les expressions n8n. Doit se terminer par .pdf.',
+				displayOptions: { show: { operation: ['fillFields'], outputMode: ['saveToNextcloud'], outputPathMode: ['folderBrowser'] } },
+			},
+			{
+				displayName: 'Chemin de sortie complet',
 				name: 'outputPath',
 				type: 'string',
 				default: '',
 				placeholder: '/Documents/Remplis/formulaire_rempli.pdf',
-				description: 'Chemin sur Nextcloud où le PDF rempli sera sauvegardé. Le dossier parent doit exister. Supporte les expressions.',
-				displayOptions: { show: { operation: ['fillFields'], outputMode: ['saveToNextcloud'] } },
+				description: 'Chemin complet sur Nextcloud. Le dossier parent doit exister. Supporte les expressions.',
+				displayOptions: { show: { operation: ['fillFields'], outputMode: ['saveToNextcloud'], outputPathMode: ['path'] } },
 				required: true,
 			},
 
@@ -344,6 +375,9 @@ export class NextCloudPdf implements INodeType {
 
 		loadOptions: {
 			async getFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				return getFolders(this);
+			},
+			async getOutputFolders(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				return getFolders(this);
 			},
 			async getPdfFiles(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
@@ -482,8 +516,17 @@ export class NextCloudPdf implements INodeType {
 					const outputMode = this.getNodeParameter('outputMode', i, 'saveToNextcloud') as string;
 
 					if (outputMode === 'saveToNextcloud') {
-						const outputPath = this.getNodeParameter('outputPath', i, '') as string;
-						if (!outputPath) throw new NodeOperationError(this.getNode(), '"Chemin de sortie" est requis pour sauvegarder sur Nextcloud', { itemIndex: i });
+						const outputPathMode = this.getNodeParameter('outputPathMode', i, 'folderBrowser') as string;
+						let outputPath: string;
+						if (outputPathMode === 'folderBrowser') {
+							const folder = this.getNodeParameter('outputFolder', i, '/') as string;
+							const fileName = this.getNodeParameter('outputFileNameBrowser', i, '') as string;
+							if (!fileName) throw new NodeOperationError(this.getNode(), '"Nom du fichier de sortie" est requis', { itemIndex: i });
+							outputPath = buildOutputPath(folder, fileName);
+						} else {
+							outputPath = this.getNodeParameter('outputPath', i, '') as string;
+							if (!outputPath) throw new NodeOperationError(this.getNode(), '"Chemin de sortie complet" est requis', { itemIndex: i });
+						}
 						await uploadFile(this, creds, outputPath, filledBuffer, 'application/pdf');
 						returnData.push({
 							json: {
