@@ -10,6 +10,7 @@ import {
 
 import { XMLParser } from 'fast-xml-parser';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -295,7 +296,10 @@ export interface ExcelTableInfo {
 	dataRowCount: number;
 }
 
-// ExcelJS table ref format: "A4:D100"
+// ---------------------------------------------------------------------------
+// Table ref helpers
+// ---------------------------------------------------------------------------
+
 function tableEndRow(ref: string): number {
 	return parseInt(ref.match(/:?[A-Z]+(\d+)$/i)?.[1] ?? '1', 10);
 }
@@ -308,106 +312,233 @@ function extendTableRef(ref: string, newEndRow: number): string {
 	return ref.replace(/:\w+(\d+)$/, `:${ref.match(/:([A-Z]+)\d+$/i)?.[1] ?? 'A'}${newEndRow}`);
 }
 
-// Get all named tables from all sheets
-export async function getWorkbookTables(buffer: Buffer): Promise<ExcelTableInfo[]> {
-	const wb = await parseWorkbook(buffer);
-	const result: ExcelTableInfo[] = [];
-
-	for (const sheet of wb.worksheets) {
-		const tables = (sheet as unknown as { tables: Record<string, { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> }> }).tables ?? {};
-		for (const [, table] of Object.entries(tables)) {
-			const sr = tableStartRow(table.ref);
-			const er = tableEndRow(table.ref);
-			const dataRowCount = Math.max(0, er - sr);
-			const headers = getHeaders(sheet, sr);
-			result.push({
-				name: table.name,
-				displayName: table.displayName ?? table.name,
-				ref: table.ref,
-				sheetName: sheet.name,
-				columns: table.columns?.length ? table.columns.map(c => c.name) : headers,
-				dataRowCount,
-			});
-		}
-	}
-	return result;
+function patchTableRef(tableXml: string, newRef: string): string {
+	return tableXml
+		.replace(/(<table\b[^>]*\s)ref="[^"]*"/i, `$1ref="${newRef}"`)
+		.replace(/(<autoFilter\b[^>]*\s)ref="[^"]*"/i, `$1ref="${newRef}"`);
 }
 
-// Find a table by name across all sheets
-async function findTableInWorkbook(
-	wb: ExcelJS.Workbook,
-	tableName: string,
-): Promise<{ sheet: ExcelJS.Worksheet; table: { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> } }> {
-	for (const sheet of wb.worksheets) {
-		const tables = (sheet as unknown as { tables: Record<string, { name: string; displayName?: string; ref: string; columns?: Array<{ name: string }> }> }).tables ?? {};
-		for (const [, table] of Object.entries(tables)) {
-			if (table.name === tableName || table.displayName === tableName) {
-				return { sheet, table };
+// ---------------------------------------------------------------------------
+// Named table detection — ZIP-based (reads XML directly, always reliable)
+// ---------------------------------------------------------------------------
+
+interface ZipTable {
+	name: string;
+	displayName: string;
+	ref: string;
+	sheetName: string;
+	zipPath: string;
+	columns: string[];
+}
+
+const zipXmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+
+function findSheetForRef(wb: ExcelJS.Workbook, ref: string): string | undefined {
+	try {
+		const sr = tableStartRow(ref);
+		const sc = ref.match(/^([A-Z]+)/i)?.[1] ?? 'A';
+		for (const sheet of wb.worksheets) {
+			const cell = sheet.getCell(`${sc}${sr}`);
+			if (cell.value !== null && cell.value !== undefined && cell.value !== '') {
+				return sheet.name;
+			}
+		}
+	} catch { /* ignore */ }
+	return wb.worksheets[0]?.name;
+}
+
+async function extractTablesFromZip(buffer: Buffer, wb: ExcelJS.Workbook): Promise<ZipTable[]> {
+	const tables: ZipTable[] = [];
+	let zip: InstanceType<typeof JSZip>;
+	try {
+		zip = await JSZip.loadAsync(buffer);
+	} catch { return tables; }
+
+	// Find all xl/tables/*.xml files
+	const tableFilePaths = Object.keys(zip.files).filter(p => /^xl[/\\]tables[/\\].+\.xml$/i.test(p));
+	if (tableFilePaths.length === 0) return tables;
+
+	// Build tableZipPath → sheetName via worksheet _rels
+	const tablePathToSheet: Record<string, string> = {};
+	const rIdToSheetName: Record<string, string> = {};
+
+	const wbXml = await zip.file('xl/workbook.xml')?.async('text');
+	const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('text');
+
+	if (wbXml && wbRelsXml) {
+		const wb2 = zipXmlParser.parse(wbXml);
+		const sheetNodes = (() => { const s = wb2?.workbook?.sheets?.sheet; return s ? (Array.isArray(s) ? s : [s]) : []; })() as Record<string, string>[];
+		for (const s of sheetNodes) {
+			const rId = s['@_r:id'] || s['@_r:Id'] || ''; if (rId) rIdToSheetName[rId] = s['@_name'] || '';
+		}
+		const wbRels2 = zipXmlParser.parse(wbRelsXml);
+		const relNodes = (() => { const r = wbRels2?.Relationships?.Relationship; return r ? (Array.isArray(r) ? r : [r]) : []; })() as Record<string, string>[];
+		const wsFileToSheetName: Record<string, string> = {};
+		for (const r of relNodes) {
+			if ((r['@_Type'] || '').includes('/worksheet')) {
+				const file = (r['@_Target'] || '').split('/').pop()?.toLowerCase() ?? '';
+				const name = rIdToSheetName[r['@_Id']] ?? '';
+				if (file && name) wsFileToSheetName[file] = name;
+			}
+		}
+		for (const zipPath of Object.keys(zip.files)) {
+			const m = zipPath.match(/xl[/\\]worksheets[/\\]_rels[/\\](.+\.xml)\.rels$/i);
+			if (!m) continue;
+			const sheetName = wsFileToSheetName[m[1].toLowerCase()];
+			if (!sheetName) continue;
+			const relsXml = await zip.file(zipPath)?.async('text');
+			if (!relsXml) continue;
+			const rels2 = zipXmlParser.parse(relsXml);
+			const rNodes = (() => { const r = rels2?.Relationships?.Relationship; return r ? (Array.isArray(r) ? r : [r]) : []; })() as Record<string, string>[];
+			for (const r of rNodes) {
+				if (!(r['@_Type'] || '').includes('/table')) continue;
+				const resolved = ('xl/' + (r['@_Target'] || '').replace(/^\.\.\//, '')).toLowerCase();
+				tablePathToSheet[resolved] = sheetName;
 			}
 		}
 	}
-	throw new Error(`Table "${tableName}" not found. Use "List" to see available tables.`);
+
+	// Parse each table XML
+	for (const tableZipPath of tableFilePaths) {
+		const tableXml = await zip.file(tableZipPath)?.async('text');
+		if (!tableXml) continue;
+		const tbl = zipXmlParser.parse(tableXml)?.table as Record<string, unknown> | undefined;
+		if (!tbl) continue;
+
+		const name = String(tbl['@_name'] || '');
+		const displayName = String(tbl['@_displayName'] || name);
+		const ref = String(tbl['@_ref'] || '');
+		if (!name || !ref) continue;
+
+		const sheetName = tablePathToSheet[tableZipPath.toLowerCase()] ?? findSheetForRef(wb, ref);
+		if (!sheetName) continue;
+
+		// Read column names from actual header cells (most reliable)
+		const sheet = wb.getWorksheet(sheetName);
+		const columns: string[] = [];
+		if (sheet) {
+			const sr = tableStartRow(ref);
+			const headerRow = sheet.getRow(sr);
+			// Probe up to 5 rows to find the one with most filled cells
+			let bestRow = headerRow;
+			let bestCount = 0;
+			for (let offset = 0; offset <= Math.min(4, tableEndRow(ref) - sr); offset++) {
+				const row = sheet.getRow(sr + offset);
+				let count = 0;
+				row.eachCell({ includeEmpty: false }, () => count++);
+				if (count > bestCount) { bestCount = count; bestRow = row; }
+			}
+			bestRow.eachCell({ includeEmpty: false }, cell => {
+				const v = cellValue(cell);
+				if (v) columns.push(String(v));
+			});
+		}
+
+		tables.push({ name, displayName, ref, sheetName, zipPath: tableZipPath, columns });
+	}
+
+	return tables;
 }
 
-// Return column names of a named table
+// ---------------------------------------------------------------------------
+// Public table API
+// ---------------------------------------------------------------------------
+
+export async function getWorkbookTables(buffer: Buffer): Promise<ExcelTableInfo[]> {
+	const wb = await parseWorkbook(buffer);
+	const zipTables = await extractTablesFromZip(buffer, wb);
+	return zipTables.map(t => ({
+		name: t.name,
+		displayName: t.displayName,
+		ref: t.ref,
+		sheetName: t.sheetName,
+		columns: t.columns,
+		dataRowCount: Math.max(0, tableEndRow(t.ref) - tableStartRow(t.ref)),
+	}));
+}
+
 export async function getTableColumns(buffer: Buffer, tableName: string): Promise<string[]> {
 	const wb = await parseWorkbook(buffer);
-	const { sheet, table } = await findTableInWorkbook(wb, tableName);
-	if (table.columns?.length) return table.columns.map(c => c.name);
-	return getHeaders(sheet, tableStartRow(table.ref));
+	const tables = await extractTablesFromZip(buffer, wb);
+	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
+	if (!t) throw new Error(`Table "${tableName}" not found`);
+	return t.columns;
 }
 
-// Return data rows from a named table (optionally filtered by column values)
 export async function getTableRows(
 	buffer: Buffer,
 	tableName: string,
 	filters: Array<{ column: string; value: string }> = [],
 ): Promise<IDataObject[]> {
 	const wb = await parseWorkbook(buffer);
-	const { sheet, table } = await findTableInWorkbook(wb, tableName);
-	const sr = tableStartRow(table.ref); // header row
-	const er = tableEndRow(table.ref);
-	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
+	const tables = await extractTablesFromZip(buffer, wb);
+	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
+	if (!t) throw new Error(`Table "${tableName}" not found`);
 
+	const sheet = wb.getWorksheet(t.sheetName);
+	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
+
+	const sr = tableStartRow(t.ref);
+	const er = tableEndRow(t.ref);
 	const rows: IDataObject[] = [];
+
 	for (let r = sr + 1; r <= er; r++) {
 		const row = sheet.getRow(r);
 		const obj: IDataObject = {};
-		columns.forEach((col, i) => {
+		t.columns.forEach((col, i) => {
 			obj[col] = cellValue(row.getCell(i + 1)) as IDataObject[string];
 		});
 		rows.push(obj);
 	}
 
 	if (filters.length === 0) return rows;
-	return rows.filter(row =>
-		filters.every(f => String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase()),
-	);
+	return rows.filter(row => filters.every(f => String(row[f.column] ?? '').toLowerCase() === f.value.toLowerCase()));
 }
 
-// Append a row to a named table (extends table ref by 1)
+// Table write: ExcelJS + update table XML ref via JSZip
+async function writeTableOperation(
+	originalBuffer: Buffer,
+	wb: ExcelJS.Workbook,
+	tableZipPath: string,
+	newRef: string,
+): Promise<Buffer> {
+	const newWbBuffer = await saveWorkbook(wb);
+
+	// Use JSZip to update ONLY the table XML ref in the new file
+	const newZip = await JSZip.loadAsync(newWbBuffer);
+	const tableXml = await newZip.file(tableZipPath)?.async('text');
+	if (tableXml) {
+		newZip.file(tableZipPath, patchTableRef(tableXml, newRef));
+	}
+
+	return Buffer.from(await newZip.generateAsync({
+		type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 },
+	}));
+}
+
 export async function appendRowToTable(
 	buffer: Buffer,
 	tableName: string,
 	rowData: IDataObject,
 ): Promise<Buffer> {
 	const wb = await parseWorkbook(buffer);
-	const { sheet, table } = await findTableInWorkbook(wb, tableName);
-	const sr = tableStartRow(table.ref);
-	const er = tableEndRow(table.ref);
-	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
+	const tables = await extractTablesFromZip(buffer, wb);
+	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
+	if (!t) throw new Error(`Table "${tableName}" not found`);
 
-	// Write new row after table end
+	const sheet = wb.getWorksheet(t.sheetName);
+	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
+
+	const er = tableEndRow(t.ref);
 	const newRowNum = er + 1;
 	const newRow = sheet.getRow(newRowNum);
-	columns.forEach((col, i) => {
+
+	t.columns.forEach((col, i) => {
 		if (rowData[col] !== undefined) newRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
 	});
 	newRow.commit();
 
-	// Extend table ref
-	table.ref = extendTableRef(table.ref, newRowNum);
-	return saveWorkbook(wb);
+	return writeTableOperation(buffer, wb, t.zipPath, extendTableRef(t.ref, newRowNum));
 }
 
 // Update an existing row in a named table (rowIndex = 1-based data row)
@@ -418,22 +549,24 @@ export async function updateRowInTable(
 	rowData: IDataObject,
 ): Promise<Buffer> {
 	const wb = await parseWorkbook(buffer);
-	const { sheet, table } = await findTableInWorkbook(wb, tableName);
-	const sr = tableStartRow(table.ref);
-	const er = tableEndRow(table.ref);
+	const tables = await extractTablesFromZip(buffer, wb);
+	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
+	if (!t) throw new Error(`Table "${tableName}" not found`);
+
+	const sheet = wb.getWorksheet(t.sheetName);
+	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
+
+	const sr = tableStartRow(t.ref);
+	const er = tableEndRow(t.ref);
 	const dataRowCount = er - sr;
+	if (rowIndex < 1 || rowIndex > dataRowCount) throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 
-	if (rowIndex < 1 || rowIndex > dataRowCount) {
-		throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
-	}
-
-	const columns = table.columns?.length ? table.columns.map(c => c.name) : getHeaders(sheet, sr);
 	const targetRow = sheet.getRow(sr + rowIndex);
-	columns.forEach((col, i) => {
+	t.columns.forEach((col, i) => {
 		if (rowData[col] !== undefined) targetRow.getCell(i + 1).value = rowData[col] as ExcelJS.CellValue;
 	});
 	targetRow.commit();
-	return saveWorkbook(wb);
+	return writeTableOperation(buffer, wb, t.zipPath, t.ref);
 }
 
 // Delete a row from a named table (rowIndex = 1-based data row)
@@ -443,18 +576,20 @@ export async function deleteRowFromTable(
 	rowIndex: number,
 ): Promise<Buffer> {
 	const wb = await parseWorkbook(buffer);
-	const { sheet, table } = await findTableInWorkbook(wb, tableName);
-	const sr = tableStartRow(table.ref);
-	const er = tableEndRow(table.ref);
-	const dataRowCount = er - sr;
+	const tables = await extractTablesFromZip(buffer, wb);
+	const t = tables.find(x => x.name === tableName || x.displayName === tableName);
+	if (!t) throw new Error(`Table "${tableName}" not found`);
 
-	if (rowIndex < 1 || rowIndex > dataRowCount) {
-		throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
-	}
+	const sheet = wb.getWorksheet(t.sheetName);
+	if (!sheet) throw new Error(`Sheet "${t.sheetName}" not found`);
+
+	const sr = tableStartRow(t.ref);
+	const er = tableEndRow(t.ref);
+	const dataRowCount = er - sr;
+	if (rowIndex < 1 || rowIndex > dataRowCount) throw new Error(`Row ${rowIndex} out of range — table has ${dataRowCount} data rows`);
 
 	sheet.spliceRows(sr + rowIndex, 1);
-	table.ref = extendTableRef(table.ref, er - 1);
-	return saveWorkbook(wb);
+	return writeTableOperation(buffer, wb, t.zipPath, extendTableRef(t.ref, er - 1));
 }
 
 // ---------------------------------------------------------------------------
