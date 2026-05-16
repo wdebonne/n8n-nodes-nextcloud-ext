@@ -3,3 +3,5 @@ dist/
 .env
 .env.*
 *.tgz
+GUIDE_*.md
+!GUIDE_NEXTCLOUD_DOC.md
