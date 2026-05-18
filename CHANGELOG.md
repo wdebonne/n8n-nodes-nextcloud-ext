@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.41] — 2026-05-18
+
+### Ajouté — Node NextCloud Search
+
+- **Nouveau node `NextCloud Search`** : recherche une valeur dans une colonne d'un fichier tableur Nextcloud et retourne la valeur d'une autre colonne sur la même ligne — l'équivalent d'un VLOOKUP/RECHERCHEV directement dans n8n.
+  - **Source Type** : `Sheet` (feuille avec ligne d'en-tête) ou `Table` (table Excel nommée).
+  - **Sélection de fichier** : même arborescence Dossier → Fichier que le node Spreadsheet (ou chemin par expression).
+  - **Lookups multiples** : chaque lookup configure indépendamment :
+    - *Search Column* — colonne où chercher (dropdown chargé depuis le fichier)
+    - *Search Value* — valeur à trouver (supporte les expressions n8n, ex : `{{ $json.materiel_nom_1 }}`)
+    - *Return Column* — colonne dont la valeur est retournée (dropdown chargé depuis le fichier)
+    - *Output Field Name* — nom du champ JSON dans l'item de sortie (ex : `materiel_prix_1`)
+  - **Options** : insensibilité à la casse (défaut), comportement si non trouvé (`null` silencieux ou erreur), conservation des données d'entrée en sortie (`Pass Through`, défaut activé).
+  - Exemple : entrée `body.materiel_nom_1 = "Table"` → sortie `body.materiel_prix_1 = "50€"`.
+
+---
+
 ## [1.0.40] — 2026-05-15
 
 ### Documentation

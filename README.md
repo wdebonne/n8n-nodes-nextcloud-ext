@@ -16,6 +16,7 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 |---|---|---|
 | **NextCloud Folder** | OneDrive | Gestion de fichiers et dossiers via WebDAV |
 | **NextCloud Spreadsheet** | Excel | Lecture/écriture de fichiers tableur + tables Excel nommées |
+| **NextCloud Search** | Excel VLOOKUP | Recherche une valeur dans une colonne et retourne une valeur correspondante (RECHERCHEV) |
 | **NextCloud Doc Template** | Word (Mail Merge) | Remplissage de templates DOCX/ODT (syntaxe Carbone) + fusion d'annexes conditionnelles |
 | **NextCloud PDF** | — | Lecture et remplissage de formulaires PDF AcroForm |
 
@@ -174,6 +175,62 @@ Travaille sur une **table Excel nommée** (créée via *Insertion → Tableau* d
 |---|---|
 | **Get Sheets** | Retourne tous les noms de feuilles du classeur |
 | **Get Tables** | Retourne toutes les tables nommées de toutes les feuilles |
+
+---
+
+## Node — NextCloud Search
+
+Recherche une valeur dans une colonne d'un fichier tableur Nextcloud et retourne la valeur d'une autre colonne sur la même ligne — l'équivalent d'un **VLOOKUP / RECHERCHEV** directement dans n8n.
+
+> L'item d'entrée est enrichi avec les valeurs trouvées. Plusieurs lookups peuvent être configurés en une seule exécution (un seul téléchargement du fichier).
+
+### Sélection de la source
+
+```
+Source Type ▼  Sheet  ← ou "Table" (table Excel nommée)
+From        ▼  From List
+Dossier     ▼  📁 Documents
+Fichier     ▼  catalogue.xlsx
+Sheet       ▼  Tarifs         ← ou "Table" si Source Type = Table
+```
+
+### Lookups
+
+Chaque entrée du bloc **Lookups** configure une recherche indépendante :
+
+| Champ | Exemple | Description |
+|---|---|---|
+| **Search Column** | `Nom du matériel` | Colonne où chercher (dropdown auto-chargé depuis le fichier) |
+| **Search Value** | `{{ $json.materiel_nom_1 }}` | Valeur à trouver — supporte les expressions n8n |
+| **Return Column** | `Prix` | Colonne dont la valeur est retournée (dropdown auto-chargé depuis le fichier) |
+| **Output Field Name** | `materiel_prix_1` | Nom du champ JSON écrit dans l'item de sortie |
+
+Exemple de résultat avec `Pass Through` activé (défaut) :
+
+```json
+{
+  "materiel_nom_1": "Table",
+  "materiel_prix_1": "50€"
+}
+```
+
+### Options
+
+| Option | Défaut | Description |
+|---|---|---|
+| **Case Sensitive** | `false` | Correspondance exacte de la casse |
+| **If Not Found** | `Set to Null` | `Set to Null` : null silencieux · `Throw Error` : arrêt avec erreur |
+| **Pass Through Original Data** | `true` | Conserver tous les champs d'entrée dans l'item de sortie |
+
+### Workflow typique — enrichir un bon de commande
+
+```
+Webhook (reçoit materiel_nom_1 = "Table")
+  → NextCloud Search
+      Lookup 1 : Nom du matériel = {{ $json.materiel_nom_1 }} → Prix → materiel_prix_1
+      Lookup 2 : Nom du matériel = {{ $json.materiel_nom_2 }} → Prix → materiel_prix_2
+  → NextCloud Doc Template (utilise materiel_prix_1, materiel_prix_2 dans le template)
+```
 
 ---
 
