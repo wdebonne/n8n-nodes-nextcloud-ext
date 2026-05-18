@@ -510,7 +510,15 @@ export class NextCloudPdf implements INodeType {
 					}
 
 					const flattenForm = this.getNodeParameter('flattenForm', i, false) as boolean;
-					if (flattenForm) form.flatten();
+					if (flattenForm) {
+						try {
+							form.flatten();
+						} catch {
+							// Fallback: fields filled above already have appearance streams;
+							// skip the global re-render that fails on empty/unfilled fields.
+							form.flatten({ updateFieldAppearances: false });
+						}
+					}
 
 					const filledBuffer = Buffer.from(await pdfDoc.save());
 					const outputMode = this.getNodeParameter('outputMode', i, 'saveToNextcloud') as string;

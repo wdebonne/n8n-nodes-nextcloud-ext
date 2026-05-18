@@ -416,7 +416,7 @@ Retourne tous les champs du formulaire en JSON structuré avec deux niveaux :
 
 *(insensible à la casse)*
 
-**Option Aplatir le formulaire :** les champs deviennent du texte imprimé non modifiable.
+**Option Aplatir le formulaire :** les champs deviennent du texte imprimé non modifiable. Fonctionne même si certains champs n'ont pas été remplis — les champs vides sont aplatis comme espace blanc.
 
 **Mode de sortie — Save to Nextcloud :**
 

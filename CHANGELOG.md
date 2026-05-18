@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.42] — 2026-05-18
+
+### Corrigé — Node NextCloud PDF
+
+- **Aplatir le formulaire** : l'opération échouait lorsque certains champs n'avaient pas de valeur renseignée (absence de stream d'apparence). Correction : en cas d'échec de l'aplatissement standard, le node repasse automatiquement en mode `updateFieldAppearances: false` — les champs remplis sont rendus correctement, les champs vides sont aplatis comme espace blanc, sans erreur.
+
+---
+
 ## [1.0.41] — 2026-05-18
 
 ### Ajouté — Node NextCloud Search
