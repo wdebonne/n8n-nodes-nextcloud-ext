@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\\" -Force | Select-Object Name, PSIsContainer | Format-Table -AutoSize)",
+      "Bash(ls -la \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\\")",
+      "Read(//f/Visual Studio Code/**)",
+      "Bash(New-Item -ItemType Directory -Force \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\nodes\\\\NextCloudSearch\")",
+      "Bash(Out-Null)",
+      "Bash(Write-Output \"ok\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\nodes\\\\NextCloudSearch\")",
+      "PowerShell(Copy-Item \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\nodes\\\\NextCloudSpreadsheet\\\\nextcloud.svg\" \"f:\\\\Visual Studio Code\\\\n8n - NextCloud\\\\nodes\\\\NextCloudSearch\\\\nextcloud.svg\")",
+      "Bash(git add *)",
+      "Bash(npm run *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(npm publish *)",
+      "Bash(./node_modules/.bin/eslint nodes *)",
+      "Bash(npm whoami *)",
+      "Bash(ls *.md)",
+      "Bash(dir /b *.md)"
+    ]
+  }
+}
