@@ -18,7 +18,8 @@ Nodes n8n communautaires pour **Nextcloud** — l'équivalent self-hosted des no
 | **NextCloud Spreadsheet** | Excel | Lecture/écriture de fichiers tableur + tables Excel nommées |
 | **NextCloud Search** | Excel VLOOKUP | Recherche une valeur dans une colonne et retourne une valeur correspondante (RECHERCHEV) |
 | **NextCloud Doc Template** | Word (Mail Merge) | Remplissage de templates DOCX/ODT (syntaxe Carbone) + fusion d'annexes conditionnelles |
-| **NextCloud PDF** | — | Lecture et remplissage de formulaires PDF AcroForm |
+| **NextCloud PDF** | — | Lecture, extraction de texte et remplissage de formulaires PDF AcroForm |
+| **NextCloud OCR** | — | Extraction de texte par OCR (Docling local, Mistral OCR) pour PDFs scannés ou aplatis |
 
 ---
 
@@ -379,13 +380,15 @@ Résultat : template (2p) + annexe_trottoir (1p) + annexe_barriere (1p) = 4 page
 
 ## Node — NextCloud PDF
 
-Lit et remplit les champs de **formulaires PDF AcroForm** stockés sur Nextcloud.
+Lit, extrait le texte et remplit les champs de **formulaires PDF** stockés sur Nextcloud.
 
 ### Opération : Get Fields
 
-Retourne tous les champs du formulaire en JSON structuré avec deux niveaux :
+Extrait tous les champs d'un **formulaire AcroForm interactif** (PDF non aplati). Retourne un JSON structuré avec deux niveaux :
 - `values` : objet plat `{ NomChamp: valeur }` — utilisable directement dans les expressions (`$json.values.NomChamp`)
 - `fields` : tableau détaillé avec `name`, `type`, `value`, `options`, `required`, `readOnly`
+
+> Si `Get Fields` retourne 0 champs, le PDF est probablement aplati — utilisez **Get Text** ou le node **NextCloud OCR**.
 
 **Types de champs supportés :**
 
@@ -398,6 +401,24 @@ Retourne tous les champs du formulaire en JSON structuré avec deux niveaux :
 | `optionList` | Liste à sélection multiple | `string[]` |
 | `signature` | Champ de signature | `null` |
 | `button` | Bouton | `null` |
+
+### Opération : Get Text
+
+Extrait le **texte brut page par page** depuis la couche texte du PDF, sans OCR. Fonctionne sur les PDFs aplatis remplis numériquement (CERFA numérique, formulaires administratifs, etc.) dont le texte est vectoriel mais non sélectionnable comme champs AcroForm.
+
+```json
+{
+  "pdfPath": "/cerfa_14023.pdf",
+  "text": "DÉCLARATION DE CESSION\nVendeur : DUPONT Jean\nMarque : Renault...",
+  "pageCount": 2,
+  "pages": [
+    { "page": 1, "text": "DÉCLARATION DE CESSION\n..." },
+    { "page": 2, "text": "..." }
+  ]
+}
+```
+
+> Si `text` est vide ou illisible, le PDF est scanné (image) — utilisez le node **NextCloud OCR** avec Docling.
 
 ### Opération : Fill Fields
 
@@ -426,6 +447,94 @@ Dossier de sortie       ▼  📁 Documents / Remplis
 Nom du fichier de sortie   formulaire_{{ $json["Nom"] }}.pdf
 ```
 Ou mode *Par chemin complet (expression)*.
+
+---
+
+---
+
+## Node — NextCloud OCR
+
+Extrait le texte de fichiers PDF stockés sur Nextcloud via un moteur OCR externe. Conçu pour les PDFs **scannés** (image) ou **aplatis sans couche texte** exploitable.
+
+> Pour les PDFs remplis numériquement (texte vectoriel), préférez **NextCloud PDF → Get Text** qui est plus rapide et ne nécessite aucun serveur externe.
+
+### Choisir le bon outil
+
+| Situation | Node recommandé |
+|---|---|
+| PDF interactif avec champs AcroForm | **NextCloud PDF → Get Fields** |
+| PDF aplati rempli numériquement (texte sélectionnable) | **NextCloud PDF → Get Text** |
+| PDF scanné ou texte non sélectionnable | **NextCloud OCR → Docling ou Mistral** |
+
+### Moteur : Docling (local)
+
+Envoie le PDF au serveur [`docling-serve`](https://github.com/DS4SD/docling-serve) auto-hébergé. Idéal pour les environnements self-hosted — aucune donnée ne quitte votre infrastructure.
+
+| Paramètre | Défaut | Description |
+|---|---|---|
+| **URL du serveur** | `http://localhost:5001` | URL de base du serveur docling-serve |
+| **Version API** | `/v1alpha/convert/source` | Chemin de l'endpoint — sélectionner selon la version installée |
+
+**Versions API :**
+
+| Version Docling-serve | Chemin |
+|---|---|
+| ≤ 0.4 | `/v1alpha/convert/source` |
+| ≥ 0.5 | `/v1/convert/source` |
+| Autre | *Personnalisé* (champ libre) |
+
+**Démarrer Docling en local (Docker) :**
+```bash
+docker run -p 5001:5001 ds4sd/docling-serve
+```
+
+### Moteur : Mistral OCR
+
+Envoie le PDF (encodé base64) à l'[API Mistral OCR](https://docs.mistral.ai/capabilities/document/).
+
+| Paramètre | Défaut | Description |
+|---|---|---|
+| **Clé API Mistral** | — | Créer sur [console.mistral.ai/api-keys](https://console.mistral.ai/api-keys) |
+| **Modèle** | `mistral-ocr-latest` | Identifiant du modèle OCR |
+
+### Sortie
+
+```json
+{
+  "pdfPath": "/cerfa_14023.pdf",
+  "provider": "docling",
+  "text": "DÉCLARATION DE CESSION\nVendeur : DUPONT Jean\n...",
+  "markdown": "# DÉCLARATION DE CESSION\n\n**Vendeur :** DUPONT Jean\n...",
+  "pageCount": 2,
+  "pages": [
+    { "index": 0, "text": "...", "markdown": "..." }
+  ]
+}
+```
+
+> `pages[]` est peuplé par les providers qui retournent une pagination (Mistral). `markdown` préserve la structure du document (titres, tableaux) — préférable pour le post-traitement AI.
+
+### Option : Inclure la réponse brute
+
+Activez **Inclure la réponse brute** pour voir la réponse complète du provider dans le champ `raw` — utile pour diagnostiquer des problèmes ou explorer les métadonnées disponibles.
+
+---
+
+## Workflow CERFA — Extraire les champs d'un formulaire aplati
+
+```
+NextCloud PDF → Get Text
+  (si text vide → NextCloud OCR avec Docling)
+    ↓
+Node AI (OpenAI / Claude)
+  Prompt : "Voici le texte d'un CERFA N°14023*01 (déclaration de cession).
+            Extrais en JSON : nom_vendeur, prenom_vendeur, adresse_vendeur,
+            nom_acheteur, prenom_acheteur, adresse_acheteur, marque, modele,
+            immatriculation, vin, date_cession, kilometrage.
+            Si absent → null."
+    ↓
+Utiliser les champs extraits dans le reste du workflow
+```
 
 ---
 
@@ -465,6 +574,18 @@ HTTP Request → NextCloud Doc Template (JSON Object mode, {d.lignes[i].xxx})
 
 ```
 Webhook → NextCloud Doc Template (Fill Template + Conditional Annexes)
+```
+
+### Extraire les données d'un CERFA rempli numériquement (aplati)
+
+```
+NextCloud PDF (Get Text) → Node AI → traitement des champs extraits
+```
+
+### Extraire les données d'un CERFA scanné
+
+```
+NextCloud OCR (Docling) → Node AI → traitement des champs extraits
 ```
 
 ---

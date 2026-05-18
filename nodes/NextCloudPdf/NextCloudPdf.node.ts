@@ -21,6 +21,8 @@ import {
 	PDFButton,
 } from 'pdf-lib';
 
+import { PDFParse } from 'pdf-parse';
+
 import {
 	getCredentials,
 	downloadFile,
@@ -150,8 +152,14 @@ export class NextCloudPdf implements INodeType {
 					{
 						name: 'Get Fields',
 						value: 'getFields',
-						description: 'Extrait tous les champs de formulaire du PDF et les retourne en JSON',
+						description: 'Extrait tous les champs de formulaire AcroForm du PDF (PDFs interactifs non aplatis)',
 						action: 'Extraire les champs du formulaire PDF',
+					},
+					{
+						name: 'Get Text',
+						value: 'getText',
+						description: 'Extrait le texte brut page par page — fonctionne sur les PDFs aplatis, CERFA remplis, et tout PDF contenant une couche texte',
+						action: 'Extraire le texte brut du PDF',
 					},
 					{
 						name: 'Fill Fields',
@@ -442,6 +450,25 @@ export class NextCloudPdf implements INodeType {
 							fields,
 						},
 					});
+					continue;
+				}
+
+				// ── GET TEXT ───────────────────────────────────────────────────
+				if (operation === 'getText') {
+					const parser = new PDFParse({ data: buffer });
+					try {
+						const result = await parser.getText();
+						returnData.push({
+							json: {
+								pdfPath: filePath,
+								text: result.text,
+								pageCount: result.total,
+								pages: result.pages.map(p => ({ page: p.num, text: p.text })) as IDataObject[],
+							},
+						});
+					} finally {
+						await parser.destroy();
+					}
 					continue;
 				}
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.0.43] — 2026-05-18
+
+### Ajouté — Nouveau node NextCloud OCR
+
+- **Nouveau node `NextCloud OCR`** : extrait le texte de fichiers PDF stockés sur Nextcloud via un moteur OCR externe. Conçu pour les PDFs scannés ou aplatis dont le texte n'est pas sélectionnable (formulaires imprimés, CERFA scannés, etc.).
+  - **Moteur Docling (local)** : envoie le PDF au serveur `docling-serve` auto-hébergé via l'API multipart. URL et chemin API configurables (supporte `/v1alpha/convert/source` ≤ 0.4 et `/v1/convert/source` ≥ 0.5, ainsi qu'un chemin personnalisé).
+  - **Moteur Mistral OCR** : envoie le PDF encodé en base64 à l'API `mistral-ocr-latest`. Clé API et modèle configurables.
+  - **Architecture extensible** : ajouter un nouveau provider = une fonction `runXxx()` + une option dans le dropdown — le reste du code ne change pas.
+  - Sortie normalisée : `pdfPath`, `provider`, `text`, `markdown`, `pageCount`, `pages[]` (si le provider retourne une pagination), `raw` (optionnel, pour le débogage).
+  - Même pattern de sélection de fichier que les autres nodes (Depuis une liste ou par chemin/expression).
+
+### Ajouté — Opération Get Text dans NextCloud PDF
+
+- **Opération `Get Text`** : extrait le texte brut page par page depuis la couche texte du PDF, **sans OCR**. Fonctionne sur les PDFs aplatis remplis numériquement (CERFA numériques, formulaires administratifs, etc.) dont les champs AcroForm ont été fusionnés dans le contenu mais dont le texte reste vectoriel.
+  - Utilise `pdf-parse` v2 (`PDFParse` class) — extrait le texte fidèlement quel que soit le type de contenu.
+  - Sortie : `pdfPath`, `text` (tout le document), `pageCount`, `pages[]` (`{ page, text }` par page).
+  - Complémentaire à `Get Fields` (champs AcroForm interactifs) : si `Get Fields` retourne 0 champs → utiliser `Get Text` ; si le texte est vide ou illisible → utiliser le node `NextCloud OCR` avec Docling.
+
+### Dépendances
+- `pdf-parse ^2.4.5` : ajouté (extraction texte natif PDF)
+
+---
+
 ## [1.0.42] — 2026-05-18
 
 ### Corrigé — Node NextCloud PDF

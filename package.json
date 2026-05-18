@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-nextcloud-ext",
-  "version": "1.0.42",
+  "version": "1.0.43",
   "description": "n8n community nodes for Nextcloud — file management (list, upload, download, share), spreadsheet operations equivalent to Microsoft 365 Excel (including named table support), DOCX/ODT template rendering, and PDF form field read/write (AcroForm)",
   "keywords": [
     "n8n-community-node-package",
@@ -55,11 +55,13 @@
       "dist/nodes/NextCloudSpreadsheet/NextCloudSpreadsheet.node.js",
       "dist/nodes/NextCloudDocTemplate/NextCloudDocTemplate.node.js",
       "dist/nodes/NextCloudPdf/NextCloudPdf.node.js",
-      "dist/nodes/NextCloudSearch/NextCloudSearch.node.js"
+      "dist/nodes/NextCloudSearch/NextCloudSearch.node.js",
+      "dist/nodes/NextCloudOcr/NextCloudOcr.node.js"
     ]
   },
   "devDependencies": {
     "@types/node": "^18.16.0",
+    "@types/pdf-parse": "^1.1.5",
     "@typescript-eslint/parser": "^5.62.0",
     "eslint-plugin-n8n-nodes-base": "^1.16.2",
     "gulp": "^4.0.2",
@@ -73,6 +75,7 @@
     "fast-xml-parser": "^4.3.6",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
     "xlsx-populate": "^1.21.0"
   },
   "peerDependencies": {
